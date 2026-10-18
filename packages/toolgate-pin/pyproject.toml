@@ -2,6 +2,7 @@
 name = "toolgate-pin"
 version = "0.1.0"
 description = "MCP tool pinning: canonical hashing, lockfile and drift detection for tool definitions"
+readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = ["mcp>=1.12,<2", "rfc8785"]
