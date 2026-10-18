@@ -1,7 +1,12 @@
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 TOOLS = {"send_member_message", "schedule_callback"}
+
+
+def london_today() -> date:
+    return datetime.now(ZoneInfo("Europe/London")).date()
 
 
 def _msg(**over) -> dict:
@@ -17,7 +22,7 @@ def _cb(**over) -> dict:
     args = {
         "member_id": "M-900001",
         "reason": "claim_query",
-        "preferred_date": (date.today() + timedelta(days=3)).isoformat(),
+        "preferred_date": (london_today() + timedelta(days=3)).isoformat(),
         "preferred_window": "morning",
         "idempotency_key": str(uuid.uuid4()),
     }
@@ -115,7 +120,7 @@ async def test_schedule_callback_ok_and_replay(comms_session):
 
 
 async def test_schedule_callback_past_date_is_error(comms_session):
-    past = (date.today() - timedelta(days=1)).isoformat()
+    past = (london_today() - timedelta(days=1)).isoformat()
     r = await comms_session.call_tool("schedule_callback", _cb(preferred_date=past))
     assert r.isError
     assert "30 days" in r.content[0].text

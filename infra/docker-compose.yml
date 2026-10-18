@@ -25,7 +25,7 @@ services:
       POSTGRES_DB: toolgate
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/gen_dev_env.py}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d toolgate"]
       interval: 3s
@@ -44,7 +44,7 @@ services:
     volumes:
       - ./keycloak/generated:/opt/keycloak/data/import:ro
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     healthcheck:
       # No curl in the image: speak HTTP to the management port (9000) over /dev/tcp.
       test:
@@ -71,7 +71,7 @@ services:
       - -c
       - python -m mock_enterprise.seed --reset && exec python -m mock_enterprise.app
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy

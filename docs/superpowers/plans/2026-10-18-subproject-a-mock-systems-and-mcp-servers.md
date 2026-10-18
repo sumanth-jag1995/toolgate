@@ -96,14 +96,31 @@ services/mcp-servers/
 ```python
 from scripts.check_forbidden_files import find_forbidden
 
+
 def test_flags_secret_files():
-    paths = [".env", "infra/a.pem", "x/id.key", "infra/terraform/terraform.tfstate",
-             "infra/terraform/terraform.tfstate.backup", "prod.tfvars"]
+    paths = [
+        ".env",
+        "infra/a.pem",
+        "x/id.key",
+        "infra/terraform/terraform.tfstate",
+        "infra/terraform/terraform.tfstate.backup",
+        "prod.tfvars",
+    ]
     assert find_forbidden(paths) == paths
 
+
 def test_allows_examples_and_code():
-    assert find_forbidden([".env.example", "prod.tfvars.example", "src/keys.py",
-                           "infra/keycloak/toolgate-realm.template.json"]) == []
+    assert (
+        find_forbidden(
+            [
+                ".env.example",
+                "prod.tfvars.example",
+                "src/keys.py",
+                "infra/keycloak/toolgate-realm.template.json",
+            ]
+        )
+        == []
+    )
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -152,18 +169,25 @@ async def test_seed_counts(session):
     assert s.coverage_rules == 30
     assert s.claims >= 51
 
+
 async def test_seed_is_deterministic(session):
-    a = await seed(session, members=20); rows_a = await dump_members(session)
-    b = await seed(session, members=20); rows_b = await dump_members(session)
-    assert a == b and rows_a == rows_b          # Review Focus 1: re-run, no duplicates
+    a = await seed(session, members=20)
+    rows_a = await dump_members(session)
+    b = await seed(session, members=20)
+    rows_b = await dump_members(session)
+    assert a == b and rows_a == rows_b  # Review Focus 1: re-run, no duplicates
+
 
 async def test_canary_present_and_complete(session):
     await seed(session, members=10)
     m = await session.get(Member, CANARY["member_id"])
     assert m.membership_number == "TG-CANARY-7Q4X9"
     assert m.email == CANARY["email"]
-    claims = (await session.scalars(select(Claim).where(Claim.member_id == "M-900001"))).all()
+    claims = (
+        await session.scalars(select(Claim).where(Claim.member_id == "M-900001"))
+    ).all()
     assert {c.status for c in claims} == {ClaimStatus.IN_REVIEW, ClaimStatus.PAID}
+
 
 async def test_no_synthetic_member_collides_with_canary_tokens(session):
     await seed(session, members=500)
@@ -223,16 +247,24 @@ git add services/mock-enterprise && git commit -m "feat(mock-enterprise): data m
 `test_auth.py` (Review Focus 4):
 ```python
 async def test_missing_token_401(client):
-    r = await client.get("/members/M-900001"); assert r.status_code == 401
+    r = await client.get("/members/M-900001")
+    assert r.status_code == 401
     assert r.headers["www-authenticate"].startswith("Bearer")
 
+
 async def test_expired_token_401(client, make_token):
-    r = await client.get("/members/M-900001", headers=make_token(["members:read"], exp_delta=-60))
+    r = await client.get(
+        "/members/M-900001", headers=make_token(["members:read"], exp_delta=-60)
+    )
     assert r.status_code == 401
 
+
 async def test_wrong_audience_401(client, make_token):
-    r = await client.get("/members/M-900001", headers=make_token(["members:read"], aud="core-read"))
+    r = await client.get(
+        "/members/M-900001", headers=make_token(["members:read"], aud="core-read")
+    )
     assert r.status_code == 401
+
 
 async def test_missing_scope_403(client, make_token):
     r = await client.get("/members/M-900001", headers=make_token(["claims:read"]))
@@ -245,26 +277,41 @@ async def test_get_canary_member(client, read_headers):
     r = await client.get("/members/M-900001", headers=read_headers)
     assert r.status_code == 200 and r.json()["membership_number"] == "TG-CANARY-7Q4X9"
 
+
 @pytest.mark.parametrize("bad", ["M-12", "M-000001' OR 1=1", "x"])
-async def test_malformed_member_id_422(client, read_headers, bad):     # Review Focus 2
+async def test_malformed_member_id_422(client, read_headers, bad):  # Review Focus 2
     r = await client.get(f"/members/{quote(bad)}", headers=read_headers)
     assert r.status_code == 422
 
+
 async def test_unknown_member_404(client, read_headers):
-    assert (await client.get("/members/M-999999", headers=read_headers)).status_code == 404
+    assert (
+        await client.get("/members/M-999999", headers=read_headers)
+    ).status_code == 404
+
 
 async def test_coverage_premier_mri(client, read_headers, canary_policy_id):
-    r = await client.get("/coverage", params={"policy_id": canary_policy_id, "procedure_code": "mri_scan"},
-                         headers=read_headers)
+    r = await client.get(
+        "/coverage",
+        params={"policy_id": canary_policy_id, "procedure_code": "mri_scan"},
+        headers=read_headers,
+    )
     assert r.json()["covered"] is True
 
+
 async def test_list_claims_limit_and_order(client, read_headers):
-    r = await client.get("/members/M-900001/claims", params={"limit": 1}, headers=read_headers)
+    r = await client.get(
+        "/members/M-900001/claims", params={"limit": 1}, headers=read_headers
+    )
     assert len(r.json()) == 1
 
+
 async def test_limit_out_of_range_422(client, read_headers):
-    assert (await client.get("/members/M-900001/claims", params={"limit": 21},
-                             headers=read_headers)).status_code == 422
+    assert (
+        await client.get(
+            "/members/M-900001/claims", params={"limit": 21}, headers=read_headers
+        )
+    ).status_code == 422
 ```
 (`read_headers` = token with all five `*:read` scopes; `canary_policy_id` fixture reads it from DB.)
 
@@ -312,41 +359,77 @@ async def test_log_claim_201(client, write_headers, canary_policy_id):
     r = await post_claim(client, write_headers, key=uuid4(), policy_id=canary_policy_id)
     assert r.status_code == 201 and r.json()["status"] == "received"
 
+
 async def test_same_key_same_payload_replays(client, write_headers, canary_policy_id):
     k = uuid4()
     a = await post_claim(client, write_headers, key=k, policy_id=canary_policy_id)
     b = await post_claim(client, write_headers, key=k, policy_id=canary_policy_id)
     assert b.status_code == 201 and a.json()["claim_id"] == b.json()["claim_id"]
 
+
 async def test_same_key_different_payload_409(client, write_headers, canary_policy_id):
     k = uuid4()
-    await post_claim(client, write_headers, key=k, policy_id=canary_policy_id, amount_pence=1000)
-    r = await post_claim(client, write_headers, key=k, policy_id=canary_policy_id, amount_pence=2000)
+    await post_claim(
+        client, write_headers, key=k, policy_id=canary_policy_id, amount_pence=1000
+    )
+    r = await post_claim(
+        client, write_headers, key=k, policy_id=canary_policy_id, amount_pence=2000
+    )
     assert r.status_code == 409
 
-async def test_concurrent_same_key_creates_one_row(client, write_headers, canary_policy_id, session):
+
+async def test_concurrent_same_key_creates_one_row(
+    client, write_headers, canary_policy_id, session
+):
     k = uuid4()
-    rs = await asyncio.gather(*[post_claim(client, write_headers, key=k, policy_id=canary_policy_id)
-                                for _ in range(5)])
-    assert {r.json()["claim_id"] for r in rs} and len({r.json()["claim_id"] for r in rs}) == 1
+    rs = await asyncio.gather(
+        *[
+            post_claim(client, write_headers, key=k, policy_id=canary_policy_id)
+            for _ in range(5)
+        ]
+    )
+    assert {r.json()["claim_id"] for r in rs} and len(
+        {r.json()["claim_id"] for r in rs}
+    ) == 1
     assert await count_claims_with_amount(session, DEFAULT_AMOUNT, "M-900001") == 1
 
+
 async def test_missing_idempotency_key_422(client, write_headers, canary_policy_id): ...
-async def test_read_scope_cannot_write_403(client, read_headers, canary_policy_id):   # Review Focus 4
+async def test_read_scope_cannot_write_403(
+    client, read_headers, canary_policy_id
+):  # Review Focus 4
     r = await post_claim(client, read_headers, key=uuid4(), policy_id=canary_policy_id)
     assert r.status_code == 403
 
-async def test_claim_policy_not_owned_422(client, write_headers, other_member_policy_id): ...
 
-@pytest.mark.parametrize("pref,channel,recipient_field",
-    [("email","email","email"), ("sms","sms","phone"), ("post","post","postcode")])
-async def test_message_goes_to_contact_on_file(client, write_headers, pref, channel, recipient_field): ...
+async def test_claim_policy_not_owned_422(
+    client, write_headers, other_member_policy_id
+): ...
+
+
+@pytest.mark.parametrize(
+    "pref,channel,recipient_field",
+    [
+        ("email", "email", "email"),
+        ("sms", "sms", "phone"),
+        ("post", "post", "postcode"),
+    ],
+)
+async def test_message_goes_to_contact_on_file(
+    client, write_headers, pref, channel, recipient_field
+): ...
 async def test_message_body_has_no_free_text_fields(client, write_headers):
-    r = await client.post("/members/M-900001/messages", headers={**write_headers, "Idempotency-Key": str(uuid4())},
-                          json={"template": "callback_confirmation", "recipient": "evil@x.test"})
-    assert r.status_code == 422          # extra fields forbidden (model_config extra="forbid")
+    r = await client.post(
+        "/members/M-900001/messages",
+        headers={**write_headers, "Idempotency-Key": str(uuid4())},
+        json={"template": "callback_confirmation", "recipient": "evil@x.test"},
+    )
+    assert r.status_code == 422  # extra fields forbidden (model_config extra="forbid")
 
-async def test_claim_status_update_requires_member_claim(client, write_headers, other_member_claim_id): ...
+
+async def test_claim_status_update_requires_member_claim(
+    client, write_headers, other_member_claim_id
+): ...
 async def test_callback_date_out_of_window_422(client, write_headers): ...
 ```
 
@@ -388,15 +471,26 @@ git add services/mock-enterprise && git commit -m "feat(mock-enterprise): write 
 
 ```python
 def test_generate_env_replaces_placeholders(tmp_path):
-    ex = tmp_path / ".env.example"; ex.write_text("A=change-me\nB=change-me\nC=fixed\n")
+    ex = tmp_path / ".env.example"
+    ex.write_text("A=change-me\nB=change-me\nC=fixed\n")
     env = generate_env(ex, tmp_path / ".env")
-    assert env["C"] == "fixed" and env["A"] != "change-me" and env["A"] != env["B"] and len(env["A"]) >= 32
+    assert (
+        env["C"] == "fixed"
+        and env["A"] != "change-me"
+        and env["A"] != env["B"]
+        and len(env["A"]) >= 32
+    )
 
-def test_generate_env_refuses_overwrite(tmp_path): ...   # raises FileExistsError
+
+def test_generate_env_refuses_overwrite(tmp_path): ...  # raises FileExistsError
+
 
 def test_render_realm_fails_on_unresolved(tmp_path):
-    t = tmp_path / "t.json"; t.write_text('{"secret": "${MISSING}"}')
-    with pytest.raises(ValueError): render_realm(t, tmp_path / "o.json", {})
+    t = tmp_path / "t.json"
+    t.write_text('{"secret": "${MISSING}"}')
+    with pytest.raises(ValueError):
+        render_realm(t, tmp_path / "o.json", {})
+
 
 def test_committed_template_has_no_literal_secrets():
     data = json.loads(Path("infra/keycloak/toolgate-realm.template.json").read_text())
@@ -446,29 +540,40 @@ git add infra scripts tests services/mock-enterprise/Dockerfile services/mock-en
 
 ```python
 # test_api_client.py
-async def test_token_cached_until_near_expiry(): ...      # MockTransport counts token calls: 2 api calls → 1 token call
-async def test_token_refreshed_when_near_expiry(): ...     # expires_in=20 → refetch on next call
+async def test_token_cached_until_near_expiry(): ...  # MockTransport counts token calls: 2 api calls → 1 token call
+async def test_token_refreshed_when_near_expiry(): ...  # expires_in=20 → refetch on next call
 async def test_404_maps_to_api_error(): ...
-async def test_timeout_maps_to_503(): ...                  # Review Focus 5: transport sleeps > timeout_s=0.1
+async def test_timeout_maps_to_503(): ...  # Review Focus 5: transport sleeps > timeout_s=0.1
 async def test_post_sends_idempotency_header(): ...
+
 
 # test_auth.py (Review Focus 4)
 async def test_valid_token_accepted(verifier, make_token):
     at = await verifier.verify_token(make_token(aud="core-read", scopes=[]))
     assert at is not None and at.client_id == "dev-tester"
+
+
 async def test_wrong_audience_rejected(verifier, make_token):
     assert await verifier.verify_token(make_token(aud="core-write")) is None
+
+
 async def test_expired_rejected(verifier, make_token): ...
-async def test_garbage_rejected(verifier): assert await verifier.verify_token("not-a-jwt") is None
+async def test_garbage_rejected(verifier):
+    assert await verifier.verify_token("not-a-jwt") is None
+
 
 # test_hardening.py
 def test_harden_sets_additional_properties_false_recursively():
     mcp = FastMCP("t")
+
     @mcp.tool()
-    def f(a: Nested) -> str: ...   # Nested is a pydantic model with a nested model field
+    def f(a: Nested) -> str: ...  # Nested is a pydantic model with a nested model field
+
     harden_schemas(mcp)
     schema = tool_input_schema(mcp, "f")
-    assert all(node.get("additionalProperties") is False for node in iter_object_nodes(schema))
+    assert all(
+        node.get("additionalProperties") is False for node in iter_object_nodes(schema)
+    )
 ```
 
 - [ ] **Step 2: Run to verify failure** — `uv run --package toolgate-mcp-servers pytest services/mcp-servers/tests/test_api_client.py services/mcp-servers/tests/test_auth.py services/mcp-servers/tests/test_hardening.py -v`. Expected: FAIL.
@@ -508,8 +613,16 @@ git add services/mcp-servers && git commit -m "feat(mcp-servers): API client, JW
 ```python
 async def test_lists_exactly_seven_tools(core_read_session):
     names = {t.name for t in (await core_read_session.list_tools()).tools}
-    assert names == {"get_member_profile", "get_policy_details", "check_coverage", "get_claim_status",
-                     "list_member_claims", "get_payment_history", "get_correspondence_history"}
+    assert names == {
+        "get_member_profile",
+        "get_policy_details",
+        "check_coverage",
+        "get_claim_status",
+        "list_member_claims",
+        "get_payment_history",
+        "get_correspondence_history",
+    }
+
 
 async def test_every_tool_is_strict_and_read_only(core_read_session):
     for t in (await core_read_session.list_tools()).tools:
@@ -517,26 +630,42 @@ async def test_every_tool_is_strict_and_read_only(core_read_session):
         assert t.outputSchema is not None
         assert t.annotations.readOnlyHint is True
 
+
 async def test_get_member_profile_canary(core_read_session):
-    r = await core_read_session.call_tool("get_member_profile", {"member_id": "M-900001"})
-    assert not r.isError and r.structuredContent["membership_number"] == "TG-CANARY-7Q4X9"
+    r = await core_read_session.call_tool(
+        "get_member_profile", {"member_id": "M-900001"}
+    )
+    assert (
+        not r.isError and r.structuredContent["membership_number"] == "TG-CANARY-7Q4X9"
+    )
+
 
 @pytest.mark.parametrize("bad", ["M-12", "M-000001' OR 1=1", ""])
-async def test_bad_member_id_is_tool_error(core_read_session, bad):          # Review Focus 2
+async def test_bad_member_id_is_tool_error(core_read_session, bad):  # Review Focus 2
     r = await core_read_session.call_tool("get_member_profile", {"member_id": bad})
     assert r.isError
 
+
 async def test_unknown_member_is_not_found(core_read_session):
-    r = await core_read_session.call_tool("get_member_profile", {"member_id": "M-999999"})
+    r = await core_read_session.call_tool(
+        "get_member_profile", {"member_id": "M-999999"}
+    )
     assert r.isError and "not found" in r.content[0].text
 
+
 async def test_check_coverage_enum_enforced(core_read_session, canary_policy_id):
-    r = await core_read_session.call_tool("check_coverage", {"policy_id": canary_policy_id, "procedure_code": "brain_transplant"})
+    r = await core_read_session.call_tool(
+        "check_coverage",
+        {"policy_id": canary_policy_id, "procedure_code": "brain_transplant"},
+    )
     assert r.isError
+
 
 async def test_list_member_claims_status_filter(core_read_session): ...
 async def test_payment_and_correspondence_history_canary(core_read_session): ...
-async def test_api_down_returns_tool_error(core_read_session_api_down): ...    # Review Focus 5 end-to-end
+async def test_api_down_returns_tool_error(
+    core_read_session_api_down,
+): ...  # Review Focus 5 end-to-end
 ```
 
 - [ ] **Step 2: Run to verify failure** — `uv run --package toolgate-mcp-servers pytest services/mcp-servers/tests/test_core_read.py -v`. Expected: FAIL.
@@ -616,18 +745,32 @@ git add services/mcp-servers && git commit -m "feat(mcp-servers): core-write ser
 
 ```python
 async def test_send_member_message_schema_has_no_recipient_or_body(comms_session):
-    t = next(t for t in (await comms_session.list_tools()).tools if t.name == "send_member_message")
+    t = next(
+        t
+        for t in (await comms_session.list_tools()).tools
+        if t.name == "send_member_message"
+    )
     props = set(t.inputSchema["properties"])
     assert props == {"member_id", "template_id", "claim_id", "idempotency_key"}
     assert t.inputSchema["additionalProperties"] is False
 
+
 async def test_extra_recipient_argument_rejected(comms_session):
-    r = await comms_session.call_tool("send_member_message",
-        {"member_id": "M-900001", "template_id": "callback_confirmation",
-         "idempotency_key": str(uuid4()), "recipient": "evil@attacker.test"})
+    r = await comms_session.call_tool(
+        "send_member_message",
+        {
+            "member_id": "M-900001",
+            "template_id": "callback_confirmation",
+            "idempotency_key": str(uuid4()),
+            "recipient": "evil@attacker.test",
+        },
+    )
     assert r.isError
 
-async def test_claim_status_update_for_canary(comms_session, canary_in_review_claim_id): ...
+
+async def test_claim_status_update_for_canary(
+    comms_session, canary_in_review_claim_id
+): ...
 async def test_template_requiring_claim_without_claim_is_error(comms_session): ...
 async def test_schedule_callback_past_date_is_error(comms_session): ...
 ```
@@ -661,15 +804,32 @@ Three representative servicing tasks, scripted as tool-call sequences over in-me
 ```python
 async def test_claim_status_update_task_in_three_calls(sessions):
     calls = CallCounter(sessions)
-    claims = await calls("core-read", "list_member_claims", {"member_id": "M-900001", "status": "in_review"})
+    claims = await calls(
+        "core-read",
+        "list_member_claims",
+        {"member_id": "M-900001", "status": "in_review"},
+    )
     cid = claims["claims"][0]["claim_id"]
     await calls("core-read", "get_claim_status", {"claim_id": cid})
-    await calls("comms", "send_member_message", {"member_id": "M-900001", "template_id": "claim_status_update",
-                                                 "claim_id": cid, "idempotency_key": str(uuid4())})
+    await calls(
+        "comms",
+        "send_member_message",
+        {
+            "member_id": "M-900001",
+            "template_id": "claim_status_update",
+            "claim_id": cid,
+            "idempotency_key": str(uuid4()),
+        },
+    )
     assert calls.count <= 4
 
-async def test_new_claim_task(sessions): ...         # get_member_profile (policy_ids) → check_coverage → log_claim → send_member_message(documents_required)
-async def test_contact_change_task(sessions): ...    # get_member_profile → update_contact_preference → send_member_message
+
+async def test_new_claim_task(
+    sessions,
+): ...  # get_member_profile (policy_ids) → check_coverage → log_claim → send_member_message(documents_required)
+async def test_contact_change_task(
+    sessions,
+): ...  # get_member_profile → update_contact_preference → send_member_message
 ```
 
 - [ ] **Step 2: Run to verify failure, then implement** the `CallCounter` helper in the test file; the test passes once Tasks 7–9 exist. Run: `uv run --package toolgate-mcp-servers pytest services/mcp-servers/tests/test_task_shapes.py -v`. Expected: 3 passed.

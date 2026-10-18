@@ -50,7 +50,7 @@ def register(mcp: FastMCP, api: ApiClient) -> None:
             ),
         ] = None,
     ) -> MessageSent:
-        """Sends a pre-approved template message to the member's contact on file."""
+        """Sends a pre-approved template message to the member's contact on file and returns a correspondence ID. Use when a member needs a standard notification such as a claim update or a request for documents."""
         body: dict = {"template": template_id}
         if claim_id is not None:
             body["claim_id"] = claim_id
@@ -73,7 +73,7 @@ def register(mcp: FastMCP, api: ApiClient) -> None:
         preferred_window: CallbackWindow,
         idempotency_key: IdempotencyKey,
     ) -> CallbackScheduled:
-        """Requests a callback to the member in a preferred date and time window."""
+        """Books a callback to the member in their preferred date and time window and returns the booking. Use when a member asks to be phoned back at a convenient time."""
         with api_errors_to_tool_errors():
             data = await api.post(
                 f"/members/{member_id}/callbacks",

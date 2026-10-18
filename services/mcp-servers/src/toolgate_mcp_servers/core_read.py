@@ -34,7 +34,7 @@ _MAX_NOTES = 3
 def register(mcp: FastMCP, api: ApiClient) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     async def get_member_profile(member_id: MemberId) -> MemberProfile:
-        """Returns a member's profile: name, date of birth, contact details, contact preference and policy IDs."""
+        """Returns a member's name, date of birth, contact details, contact preference and policy IDs. Use when you need to identify a member or find which policies they hold."""
         with api_errors_to_tool_errors():
             m = await api.get(f"/members/{member_id}")
         return MemberProfile(
@@ -51,7 +51,7 @@ def register(mcp: FastMCP, api: ApiClient) -> None:
 
     @mcp.tool(annotations=_READ_ONLY)
     async def get_policy_details(policy_id: PolicyId) -> PolicyDetails:
-        """Returns a policy's product, status, dates, excess and annual limit."""
+        """Returns a policy's product, status, start and renewal dates, excess and annual limit. Use when a member asks about the terms or status of their policy."""
         with api_errors_to_tool_errors():
             data = await api.get(f"/policies/{policy_id}")
         return PolicyDetails.model_validate(data)
@@ -60,7 +60,7 @@ def register(mcp: FastMCP, api: ApiClient) -> None:
     async def check_coverage(
         policy_id: PolicyId, procedure_code: ProcedureCode
     ) -> CoverageResult:
-        """Returns whether a procedure is covered under a policy, with any pre-authorisation requirement and limit."""
+        """Returns whether a procedure is covered under a policy, with any pre-authorisation requirement and limit. Use when a member asks whether a treatment or procedure is covered."""
         with api_errors_to_tool_errors():
             data = await api.get(
                 "/coverage",
@@ -70,7 +70,7 @@ def register(mcp: FastMCP, api: ApiClient) -> None:
 
     @mcp.tool(annotations=_READ_ONLY)
     async def get_claim_status(claim_id: ClaimId) -> ClaimStatusResult:
-        """Returns a claim's status, amount, dates, its three most recent notes and its payments."""
+        """Returns a claim's status, amount, dates, its three most recent notes and its payments. Use when a member asks whether their claim has progressed."""
         with api_errors_to_tool_errors():
             data = await api.get(f"/claims/{claim_id}")
         data["notes"] = data["notes"][-_MAX_NOTES:]
@@ -84,7 +84,7 @@ def register(mcp: FastMCP, api: ApiClient) -> None:
         ] = None,
         limit: ListLimit = 10,
     ) -> ClaimList:
-        """Returns a member's claims, newest first, optionally filtered by status."""
+        """Returns a member's claims, newest first, optionally filtered by status. Use when you need to find a member's claims or see which are still open."""
         params: dict[str, str | int] = {"limit": limit}
         if status is not None:
             params["status"] = status
@@ -96,7 +96,7 @@ def register(mcp: FastMCP, api: ApiClient) -> None:
     async def get_payment_history(
         member_id: MemberId, limit: ListLimit = 10
     ) -> PaymentList:
-        """Returns a member's most recent payments across all claims."""
+        """Returns a member's most recent payments across all their claims. Use when a member asks whether or when they have been paid."""
         with api_errors_to_tool_errors():
             data = await api.get(
                 f"/members/{member_id}/payments", params={"limit": limit}
@@ -107,7 +107,7 @@ def register(mcp: FastMCP, api: ApiClient) -> None:
     async def get_correspondence_history(
         member_id: MemberId, limit: ListLimit = 10
     ) -> CorrespondenceList:
-        """Returns the messages most recently sent to a member, with channel, template and subject."""
+        """Returns the messages most recently sent to a member, with channel, template and subject. Use when you need to know what the member has already been told."""
         with api_errors_to_tool_errors():
             data = await api.get(
                 f"/members/{member_id}/correspondence", params={"limit": limit}

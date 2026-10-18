@@ -1,9 +1,14 @@
 """Task-shape check: representative servicing tasks must finish in <= 4 tool calls."""
 
-from datetime import date
+from datetime import date, datetime
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 MAX_CALLS = 4
+
+
+def london_today() -> date:
+    return datetime.now(ZoneInfo("Europe/London")).date()
 
 
 class CallCounter:
@@ -60,7 +65,7 @@ async def test_new_claim_task(sessions):
             "member_id": "M-900001",
             "policy_id": policy_id,
             "procedure_code": "mri_scan",
-            "incident_date": date.today().isoformat(),
+            "incident_date": london_today().isoformat(),
             "amount_pence": 25000,
             "idempotency_key": str(uuid4()),
         },

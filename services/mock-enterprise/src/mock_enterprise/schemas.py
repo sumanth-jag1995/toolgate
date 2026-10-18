@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -15,6 +16,11 @@ from mock_enterprise.enums import (
     ProcedureCode,
     Product,
 )
+
+
+def business_today() -> date:
+    """Today's date in the UK, the business calendar every date rule is judged against."""
+    return datetime.now(ZoneInfo("Europe/London")).date()
 
 
 class _Out(BaseModel):
@@ -127,7 +133,7 @@ class ClaimCreate(_In):
     @field_validator("incident_date")
     @classmethod
     def _not_future(cls, v: date) -> date:
-        if v > date.today():
+        if v > business_today():
             raise ValueError("incident_date must not be in the future")
         return v
 
@@ -161,7 +167,7 @@ class CallbackCreate(_In):
     @field_validator("preferred_date")
     @classmethod
     def _within_window(cls, v: date) -> date:
-        today = date.today()
+        today = business_today()
         if not today <= v <= today + timedelta(days=30):
             raise ValueError("preferred_date must be within the next 30 days")
         return v

@@ -53,7 +53,7 @@ def register(mcp: FastMCP, api: ApiClient) -> None:
         ],
         idempotency_key: IdempotencyKey,
     ) -> ClaimCreated:
-        """Logs a new claim with status received for a member's active policy."""
+        """Creates a new claim with status received on a member's active policy and returns its claim ID. Use when a member wants to submit a claim for a treatment."""
         with api_errors_to_tool_errors():
             data = await api.post(
                 "/claims",
@@ -75,7 +75,7 @@ def register(mcp: FastMCP, api: ApiClient) -> None:
         body: Annotated[str, Field(min_length=1, max_length=1000)],
         idempotency_key: IdempotencyKey,
     ) -> NoteAdded:
-        """Adds a note to an existing claim."""
+        """Adds a note to an existing claim and returns the saved note. Use when a case-handling detail needs to be recorded against a claim."""
         with api_errors_to_tool_errors():
             data = await api.post(
                 f"/claims/{claim_id}/notes",
@@ -90,7 +90,7 @@ def register(mcp: FastMCP, api: ApiClient) -> None:
         preference: ContactPreference,
         idempotency_key: IdempotencyKey,
     ) -> ContactPreferenceUpdated:
-        """Sets a member's preferred contact channel."""
+        """Sets a member's preferred contact channel and returns the updated preference. Use when a member asks to be contacted by a different channel."""
         with api_errors_to_tool_errors():
             data = await api.put(
                 f"/members/{member_id}/contact-preference",

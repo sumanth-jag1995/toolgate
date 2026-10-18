@@ -8,8 +8,9 @@ import asyncio
 import sys
 import uuid
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 from mcp import ClientSession
@@ -102,20 +103,34 @@ async def main() -> None:
             if policy["status"] == "active":
                 policy_id = pid
                 break
-        claim = await call(
-            "core-write",
-            token,
-            "log_claim",
-            {
-                "member_id": "M-900001",
-                "policy_id": policy_id,
-                "procedure_code": "mri_scan",
-                "incident_date": date.today().isoformat(),
-                "amount_pence": 12500,
-                "idempotency_key": str(uuid.uuid4()),
-            },
-        )
+        claim_args = {
+            "member_id": "M-900001",
+            "policy_id": policy_id,
+            "procedure_code": "mri_scan",
+            "incident_date": (
+                datetime.now(ZoneInfo("Europe/London")).date() - timedelta(days=1)
+            ).isoformat(),
+            "amount_pence": 12500,
+            "idempotency_key": str(uuid.uuid4()),
+        }
+        claim = await call("core-write", token, "log_claim", claim_args)
         check("log_claim succeeds", claim["status"] == "received", claim["claim_id"])
+        replay = await call("core-write", token, "log_claim", claim_args)
+        check(
+            "log_claim replay with same key returns same claim_id (idempotent)",
+            replay["claim_id"] == claim["claim_id"],
+            replay["claim_id"],
+        )
+        async with open_session("core-write", token) as session:
+            clash = await session.call_tool(
+                "log_claim", {**claim_args, "amount_pence": 99900}
+            )
+        clash_text = clash.content[0].text if clash.content else ""
+        check(
+            "log_claim reusing key with different amount is rejected",
+            bool(clash.isError) and "idempotency key reused" in clash_text.lower(),
+            clash_text[:80],
+        )
         sent = await call(
             "comms",
             token,

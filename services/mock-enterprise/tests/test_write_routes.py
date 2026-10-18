@@ -1,6 +1,7 @@
 import asyncio
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from mock_enterprise.canary import CANARY
@@ -9,6 +10,10 @@ from sqlalchemy import func, select
 
 DEFAULT_AMOUNT = 123_456
 CANARY_ID = CANARY["member_id"]
+
+
+def london_today() -> date:
+    return datetime.now(ZoneInfo("Europe/London")).date()
 
 
 def idem(headers, key=None):
@@ -32,7 +37,7 @@ async def post_claim(
             "member_id": member_id,
             "policy_id": policy_id,
             "procedure_code": "mri_scan",
-            "incident_date": (incident_date or date.today()).isoformat(),
+            "incident_date": (incident_date or london_today()).isoformat(),
             "amount_pence": amount_pence,
         },
     )
@@ -175,7 +180,7 @@ async def test_missing_idempotency_key_422(client, write_headers, canary_policy_
             "member_id": CANARY_ID,
             "policy_id": canary_policy_id,
             "procedure_code": "mri_scan",
-            "incident_date": date.today().isoformat(),
+            "incident_date": london_today().isoformat(),
             "amount_pence": 100,
         },
     )
@@ -190,7 +195,7 @@ async def test_invalid_idempotency_key_422(client, write_headers, canary_policy_
             "member_id": CANARY_ID,
             "policy_id": canary_policy_id,
             "procedure_code": "mri_scan",
-            "incident_date": date.today().isoformat(),
+            "incident_date": london_today().isoformat(),
             "amount_pence": 100,
         },
     )
@@ -236,7 +241,7 @@ async def test_claim_future_incident_date_422(client, write_headers, canary_poli
         write_headers,
         key=uuid4(),
         policy_id=canary_policy_id,
-        incident_date=date.today() + timedelta(days=1),
+        incident_date=london_today() + timedelta(days=1),
     )
     assert r.status_code == 422
 
@@ -261,7 +266,7 @@ async def test_claim_extra_field_422(client, write_headers, canary_policy_id):
             "member_id": CANARY_ID,
             "policy_id": canary_policy_id,
             "procedure_code": "mri_scan",
-            "incident_date": date.today().isoformat(),
+            "incident_date": london_today().isoformat(),
             "amount_pence": 100,
             "status": "paid",
         },
@@ -462,7 +467,7 @@ async def test_message_read_scope_403(client, read_headers):
 def _callback_body(offset: int, reason: str = "claim_query") -> dict:
     return {
         "reason": reason,
-        "preferred_date": (date.today() + timedelta(days=offset)).isoformat(),
+        "preferred_date": (london_today() + timedelta(days=offset)).isoformat(),
         "preferred_window": "morning",
     }
 
