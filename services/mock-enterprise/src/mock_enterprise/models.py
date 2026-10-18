@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Integer,
+    Sequence,
     String,
     Text,
 )
@@ -39,6 +40,10 @@ def _enum(cls: type[PyEnum]) -> Enum:
 
 class Base(DeclarativeBase):
     pass
+
+
+# Claim IDs created via the API (C-800000...) sit above the seeded range.
+claim_id_seq = Sequence("claim_id_seq", start=800000, metadata=Base.metadata)
 
 
 class Member(Base):

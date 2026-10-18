@@ -1,10 +1,14 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from mock_enterprise.enums import (
+    CallbackReason,
+    CallbackWindow,
     ClaimStatus,
     ContactPreference,
+    MessageTemplate,
     NoteType,
     PaymentStatus,
     PolicyStatus,
@@ -93,3 +97,71 @@ class CorrespondenceOut(_Out):
     recipient: str
     subject: str
     sent_at: datetime
+
+
+class CallbackOut(_Out):
+    callback_id: int
+    member_id: str
+    reason: CallbackReason
+    preferred_date: date
+    preferred_window: CallbackWindow
+    created_at: datetime
+
+
+class _In(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+MemberIdStr = Annotated[str, Field(pattern=r"^M-\d{6}$")]
+PolicyIdStr = Annotated[str, Field(pattern=r"^P-\d{6}$")]
+ClaimIdStr = Annotated[str, Field(pattern=r"^C-\d{6}$")]
+
+
+class ClaimCreate(_In):
+    member_id: MemberIdStr
+    policy_id: PolicyIdStr
+    procedure_code: ProcedureCode
+    incident_date: date
+    amount_pence: Annotated[int, Field(ge=1, le=5_000_000)]
+
+    @field_validator("incident_date")
+    @classmethod
+    def _not_future(cls, v: date) -> date:
+        if v > date.today():
+            raise ValueError("incident_date must not be in the future")
+        return v
+
+
+class NoteCreate(_In):
+    note_type: NoteType
+    body: Annotated[str, Field(min_length=1, max_length=1000)]
+
+    @field_validator("body")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("body must not be blank")
+        return v
+
+
+class ContactPreferenceUpdate(_In):
+    preference: ContactPreference
+
+
+class MessageCreate(_In):
+    template: MessageTemplate
+    claim_id: ClaimIdStr | None = None
+
+
+class CallbackCreate(_In):
+    reason: CallbackReason
+    preferred_date: date
+    preferred_window: CallbackWindow
+
+    @field_validator("preferred_date")
+    @classmethod
+    def _within_window(cls, v: date) -> date:
+        today = date.today()
+        if not today <= v <= today + timedelta(days=30):
+            raise ValueError("preferred_date must be within the next 30 days")
+        return v

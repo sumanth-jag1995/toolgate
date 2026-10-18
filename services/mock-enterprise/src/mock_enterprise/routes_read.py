@@ -49,22 +49,25 @@ async def _require_member(db: AsyncSession, member_id: str) -> Member:
     return member
 
 
+async def build_member_out(db: AsyncSession, member: Member) -> MemberOut:
+    policy_ids = (
+        await db.scalars(
+            select(Policy.policy_id)
+            .where(Policy.member_id == member.member_id)
+            .order_by(Policy.policy_id)
+        )
+    ).all()
+    data = {c.name: getattr(member, c.name) for c in Member.__table__.columns}
+    return MemberOut(**data, policy_ids=list(policy_ids))
+
+
 @router.get(
     "/members/{member_id}",
     response_model=MemberOut,
     dependencies=[Depends(require_scope("members:read"))],
 )
 async def get_member(member_id: MemberId, db: Db):
-    member = await _require_member(db, member_id)
-    policy_ids = (
-        await db.scalars(
-            select(Policy.policy_id)
-            .where(Policy.member_id == member_id)
-            .order_by(Policy.policy_id)
-        )
-    ).all()
-    data = {c.name: getattr(member, c.name) for c in Member.__table__.columns}
-    return MemberOut(**data, policy_ids=list(policy_ids))
+    return await build_member_out(db, await _require_member(db, member_id))
 
 
 @router.get(

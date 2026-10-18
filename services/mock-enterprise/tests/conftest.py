@@ -90,6 +90,11 @@ def read_headers(make_token):
     return make_token(READ_SCOPES)
 
 
+@pytest.fixture
+def write_headers(make_token):
+    return make_token(["claims:write", "members:write", "comms:write"])
+
+
 @pytest_asyncio.fixture
 async def client(pg_url, session, rsa_key):
     """App wired to the per-test seeded schema (session fixture resets it)."""

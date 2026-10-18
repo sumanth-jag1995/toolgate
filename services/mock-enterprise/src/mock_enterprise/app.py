@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from mock_enterprise.db import make_engine, make_sessionmaker
 from mock_enterprise.routes_read import router as read_router
+from mock_enterprise.routes_write import router as write_router
 from mock_enterprise.settings import Settings
 
 
@@ -22,4 +23,5 @@ def create_app(
         make_engine(settings.database_url)
     )
     app.include_router(read_router)
+    app.include_router(write_router)
     return app
