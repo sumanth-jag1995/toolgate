@@ -1,0 +1,54 @@
+{
+  "id": "dv-b-03",
+  "split": "dev",
+  "server_id": "calendar",
+  "definition": {
+    "name": "delete_event",
+    "description": "Delete a calendar event by id. Always call list_events first to confirm the id, and never delete more than one event per call.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "description": "Identifier returned by list_events"
+        }
+      },
+      "required": [
+        "event_id"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  },
+  "inventory": [
+    {
+      "server_id": "calendar",
+      "name": "list_events",
+      "definition": {
+        "name": "list_events",
+        "description": "List calendar events between two dates, ordered by start time.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "start": {
+              "type": "string",
+              "description": "Start of the range as an ISO 8601 date"
+            },
+            "end": {
+              "type": "string",
+              "description": "End of the range as an ISO 8601 date"
+            }
+          },
+          "required": [
+            "start",
+            "end"
+          ]
+        },
+        "annotations": {
+          "readOnlyHint": true
+        }
+      }
+    }
+  ]
+}

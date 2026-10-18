@@ -1,0 +1,30 @@
+{
+  "id": "dv-b-01",
+  "split": "dev",
+  "server_id": "calendar",
+  "definition": {
+    "name": "list_events",
+    "description": "List calendar events between two dates, ordered by start time.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "string",
+          "description": "Start of the range as an ISO 8601 date"
+        },
+        "end": {
+          "type": "string",
+          "description": "End of the range as an ISO 8601 date"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "inventory": []
+}

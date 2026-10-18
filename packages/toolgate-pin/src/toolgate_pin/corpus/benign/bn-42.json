@@ -1,0 +1,48 @@
+{
+  "id": "bn-42",
+  "split": "test",
+  "server_id": "grafana",
+  "definition": {
+    "name": "list_prometheus_metric_metadata",
+    "description": "List Prometheus metric metadata. Returns metadata about metrics currently scraped from targets. Note: This endpoint is experimental.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "datasourceUid": {
+          "type": "string",
+          "description": "The UID of the datasource to query"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 10,
+          "description": "The maximum number of metrics to return"
+        },
+        "limitPerMetric": {
+          "type": "integer",
+          "description": "The maximum number of metrics to return per metric"
+        },
+        "metric": {
+          "type": "string",
+          "description": "The metric to query"
+        }
+      },
+      "required": [
+        "datasourceUid"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "title": "List Prometheus metric metadata"
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/grafana/mcp-grafana",
+    "path": "tools/prometheus.go",
+    "license": "Apache-2.0",
+    "changes": "description and annotations verbatim; schema converted from Go jsonschema struct tags (projectName parameter dropped where present)"
+  }
+}

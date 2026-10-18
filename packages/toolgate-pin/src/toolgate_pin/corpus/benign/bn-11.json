@@ -1,0 +1,44 @@
+{
+  "id": "bn-11",
+  "split": "test",
+  "server_id": "github",
+  "definition": {
+    "annotations": {
+      "idempotentHint": false,
+      "readOnlyHint": false,
+      "title": "Fork repository"
+    },
+    "description": "Fork a GitHub repository to your account or specified organization",
+    "inputSchema": {
+      "properties": {
+        "organization": {
+          "description": "Organization to fork to",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Repository owner",
+          "type": "string",
+          "x-mcp-header": "owner"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string",
+          "x-mcp-header": "repo"
+        }
+      },
+      "required": [
+        "owner",
+        "repo"
+      ],
+      "type": "object"
+    },
+    "name": "fork_repository"
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/github/github-mcp-server",
+    "path": "pkg/github/__toolsnaps__/fork_repository.snap",
+    "license": "MIT",
+    "changes": "verbatim from the toolsnap; icons, _meta and outputSchema fields dropped"
+  }
+}

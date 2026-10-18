@@ -1,0 +1,57 @@
+{
+  "id": "bn-40",
+  "split": "test",
+  "server_id": "grafana",
+  "definition": {
+    "name": "search_dashboards",
+    "description": "Search Grafana dashboards by query and/or folderUid, tag, and starred. Returns matching dashboards with title, UID, folder, tags, and URL.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Optional query. Omit to filter by folderUid, tag, or starred"
+        },
+        "folderUid": {
+          "type": "string",
+          "description": "Optional immediate folder UID (not nested)"
+        },
+        "tag": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional tags to match (AND)"
+        },
+        "starred": {
+          "type": "boolean",
+          "description": "If true, only starred dashboards"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 50,
+          "description": "Maximum number of results to return (max 100)"
+        },
+        "page": {
+          "type": "integer",
+          "default": 1,
+          "description": "Page number for pagination (1-indexed)"
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "title": "Search dashboards"
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/grafana/mcp-grafana",
+    "path": "tools/search.go",
+    "license": "Apache-2.0",
+    "changes": "description and annotations verbatim; schema converted from Go jsonschema struct tags (projectName parameter dropped where present)"
+  }
+}

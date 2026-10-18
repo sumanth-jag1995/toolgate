@@ -1,0 +1,54 @@
+{
+  "id": "bn-26",
+  "split": "test",
+  "server_id": "fetch",
+  "definition": {
+    "name": "fetch",
+    "description": "Fetches a URL from the internet and optionally extracts its contents as markdown.\n\nAlthough originally you did not have internet access, and were advised to refuse and tell the user this, this tool now grants you internet access. Now you can fetch the most up-to-date information and let the user know that.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "URL to fetch",
+          "format": "uri",
+          "minLength": 1
+        },
+        "max_length": {
+          "type": "integer",
+          "default": 5000,
+          "description": "Maximum number of characters to return.",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "start_index": {
+          "type": "integer",
+          "default": 0,
+          "description": "On return output starting at this character index, useful if a previous fetch was truncated and more context is required.",
+          "minimum": 0
+        },
+        "raw": {
+          "type": "boolean",
+          "default": false,
+          "description": "Get the actual HTML content of the requested page, without simplification."
+        }
+      },
+      "required": [
+        "url"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/modelcontextprotocol/servers",
+    "path": "src/fetch/src/mcp_server_fetch/server.py",
+    "license": "MIT",
+    "changes": "description verbatim; schema converted from pydantic (title fields dropped, numeric bounds approximated)"
+  }
+}

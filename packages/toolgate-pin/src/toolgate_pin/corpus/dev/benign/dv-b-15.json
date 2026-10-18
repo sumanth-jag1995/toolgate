@@ -1,0 +1,30 @@
+{
+  "id": "dv-b-15",
+  "split": "dev",
+  "server_id": "utils",
+  "definition": {
+    "name": "start_timer",
+    "description": "Start a countdown timer and return its id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "seconds": {
+          "type": "integer",
+          "description": "Length of the timer in seconds",
+          "minimum": 1
+        },
+        "label": {
+          "type": "string",
+          "description": "Optional label"
+        }
+      },
+      "required": [
+        "seconds"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  },
+  "inventory": []
+}

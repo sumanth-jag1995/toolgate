@@ -1,0 +1,35 @@
+{
+  "id": "bn-41",
+  "split": "test",
+  "server_id": "grafana",
+  "definition": {
+    "name": "search_folders",
+    "description": "Search for Grafana folders by a query string. Returns matching folders with details like title, UID, and URL.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "The query to search for"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "title": "Search folders"
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/grafana/mcp-grafana",
+    "path": "tools/search.go",
+    "license": "Apache-2.0",
+    "changes": "description and annotations verbatim; schema converted from Go jsonschema struct tags (projectName parameter dropped where present)"
+  }
+}

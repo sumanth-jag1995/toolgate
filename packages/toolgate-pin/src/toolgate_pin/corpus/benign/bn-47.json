@@ -1,0 +1,20 @@
+{
+  "id": "bn-47",
+  "split": "test",
+  "server_id": "mongodb",
+  "definition": {
+    "name": "list-databases",
+    "description": "List all databases for a MongoDB connection",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/mongodb-js/mongodb-mcp-server",
+    "path": "packages/tools-mongodb/src/tools/metadata/listDatabases.ts",
+    "license": "Apache-2.0",
+    "changes": "description verbatim; schema converted from zod (connection arguments and outputSchema omitted; no annotations in source)"
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "id": "bn-31",
+  "split": "test",
+  "server_id": "playwright",
+  "definition": {
+    "name": "browser_network_requests",
+    "description": "Returns a numbered list of network requests since loading the page. Use browser_network_request with the number to get full details.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "static": {
+          "type": "boolean",
+          "description": "Whether to include successful static resources like images, fonts, scripts, etc. Defaults to false."
+        },
+        "filter": {
+          "type": "string",
+          "description": "Only return requests whose URL matches this regexp (e.g. \"/api/.*user\")."
+        },
+        "filename": {
+          "type": "string",
+          "description": "File name to save the network requests to. Relative file names are resolved against the workspace root. If not provided, requests are returned as text."
+        }
+      },
+      "required": [
+        "static"
+      ]
+    },
+    "annotations": {
+      "title": "List network requests",
+      "readOnlyHint": true
+    }
+  },
+  "inventory": [
+    {
+      "server_id": "playwright",
+      "name": "browser_network_request",
+      "definition": {
+        "name": "browser_network_request",
+        "description": "Returns full details (headers and body) of a single network request, or a single part if `part` is set. Use the number from browser_network_requests.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "index": {
+              "type": "integer",
+              "description": "1-based index of the request, as printed by browser_network_requests."
+            },
+            "part": {
+              "type": "string",
+              "description": "Return only this part of the request. Omit to return full details."
+            },
+            "filename": {
+              "type": "string",
+              "description": "File name to save the result to. Relative file names are resolved against the workspace root. If not provided, output is returned as text."
+            }
+          },
+          "required": [
+            "index"
+          ]
+        },
+        "annotations": {
+          "title": "Show network request details",
+          "readOnlyHint": true
+        }
+      }
+    }
+  ],
+  "source": {
+    "repo": "https://github.com/microsoft/playwright-mcp",
+    "path": "README.md",
+    "license": "Apache-2.0",
+    "changes": "taken from the README tool listing; schema reconstructed from the listed parameters (enums and array item types simplified)"
+  }
+}

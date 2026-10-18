@@ -1,0 +1,106 @@
+{
+  "id": "bn-16",
+  "split": "test",
+  "server_id": "memory",
+  "definition": {
+    "name": "create_entities",
+    "description": "Create multiple new entities in the knowledge graph. An entity whose name already exists, or repeats an earlier entity in the same call, is skipped and its observations are not added; the result lists the skipped names in `skipped`. Use add_observations to add observations to an existing entity.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "The name of the entity"
+              },
+              "entityType": {
+                "type": "string",
+                "description": "The type of the entity"
+              },
+              "observations": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "An array of observation contents associated with the entity"
+              }
+            },
+            "required": [
+              "name",
+              "entityType",
+              "observations"
+            ]
+          }
+        }
+      },
+      "required": [
+        "entities"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "title": "Create Entities"
+    }
+  },
+  "inventory": [
+    {
+      "server_id": "memory",
+      "name": "add_observations",
+      "definition": {
+        "name": "add_observations",
+        "description": "Add new observations to existing entities in the knowledge graph",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "observations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "entityName": {
+                    "type": "string",
+                    "description": "The name of the entity to add the observations to"
+                  },
+                  "contents": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "An array of observation contents to add"
+                  }
+                },
+                "required": [
+                  "entityName",
+                  "contents"
+                ]
+              }
+            }
+          },
+          "required": [
+            "observations"
+          ]
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "title": "Add Observations"
+        }
+      }
+    }
+  ],
+  "source": {
+    "repo": "https://github.com/modelcontextprotocol/servers",
+    "path": "src/memory/index.ts",
+    "license": "MIT",
+    "changes": "schema converted from zod to JSON Schema; outputSchema omitted"
+  }
+}

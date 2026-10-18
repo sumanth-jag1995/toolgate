@@ -1,0 +1,33 @@
+{
+  "id": "bn-33",
+  "split": "test",
+  "server_id": "playwright",
+  "definition": {
+    "name": "browser_run_code_unsafe",
+    "description": "Run a Playwright code snippet. Unsafe: executes arbitrary JavaScript in the Playwright server process and is RCE-equivalent.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "A JavaScript function containing Playwright code to execute. It will be invoked with a single argument, page, which you can use for any page interaction. For example: `async (page) => { await page.getByRole('button', { name: 'Submit' }).click(); return await page.title(); }`"
+        },
+        "filename": {
+          "type": "string",
+          "description": "Load code from the specified file. Relative file names are resolved against the workspace root. If both code and filename are provided, code will be ignored."
+        }
+      }
+    },
+    "annotations": {
+      "title": "Run Playwright code (unsafe)",
+      "readOnlyHint": false
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/microsoft/playwright-mcp",
+    "path": "README.md",
+    "license": "Apache-2.0",
+    "changes": "taken from the README tool listing; schema reconstructed from the listed parameters (enums and array item types simplified)"
+  }
+}

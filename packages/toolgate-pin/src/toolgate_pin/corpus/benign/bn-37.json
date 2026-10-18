@@ -1,0 +1,24 @@
+{
+  "id": "bn-37",
+  "split": "test",
+  "server_id": "playwright",
+  "definition": {
+    "name": "browser_navigate_back",
+    "description": "Va a la page precedente dans l'historique",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "annotations": {
+      "title": "Go back",
+      "readOnlyHint": false
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/microsoft/playwright-mcp",
+    "path": "README.md",
+    "license": "Apache-2.0",
+    "changes": "description translated to French (original: \"Go back to the previous page in the history\"); taken from the README tool listing; schema reconstructed from the listed parameters (enums and array item types simplified)"
+  }
+}

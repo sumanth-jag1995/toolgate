@@ -1,0 +1,44 @@
+{
+  "id": "bn-36",
+  "split": "test",
+  "server_id": "playwright",
+  "definition": {
+    "name": "browser_select_option",
+    "description": "Select an option in a dropdown",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "description": "Human-readable element description used to obtain permission to interact with the element"
+        },
+        "target": {
+          "type": "string",
+          "description": "Exact target element reference from the page snapshot, or a unique element selector"
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Array of values to select in the dropdown. This can be a single value or multiple values."
+        }
+      },
+      "required": [
+        "target",
+        "values"
+      ]
+    },
+    "annotations": {
+      "title": "Select option",
+      "readOnlyHint": false
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/microsoft/playwright-mcp",
+    "path": "README.md",
+    "license": "Apache-2.0",
+    "changes": "taken from the README tool listing; schema reconstructed from the listed parameters (enums and array item types simplified)"
+  }
+}

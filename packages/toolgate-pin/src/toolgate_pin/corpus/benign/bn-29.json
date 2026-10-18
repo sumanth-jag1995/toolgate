@@ -1,0 +1,32 @@
+{
+  "id": "bn-29",
+  "split": "test",
+  "server_id": "playwright",
+  "definition": {
+    "name": "browser_navigate",
+    "description": "Navigate to a URL",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "The URL to navigate to"
+        }
+      },
+      "required": [
+        "url"
+      ]
+    },
+    "annotations": {
+      "title": "Navigate to a URL",
+      "readOnlyHint": false
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/microsoft/playwright-mcp",
+    "path": "README.md",
+    "license": "Apache-2.0",
+    "changes": "taken from the README tool listing; schema reconstructed from the listed parameters (enums and array item types simplified)"
+  }
+}

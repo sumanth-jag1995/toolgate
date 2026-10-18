@@ -1,0 +1,30 @@
+{
+  "id": "dv-b-04",
+  "split": "dev",
+  "server_id": "notes",
+  "definition": {
+    "name": "search_notes",
+    "description": "Search the user's notes for a phrase and return the matching titles with a short excerpt.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Phrase to look for"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum number of notes to return",
+          "default": 10
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "inventory": []
+}

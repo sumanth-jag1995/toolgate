@@ -1,0 +1,36 @@
+{
+  "id": "bn-34",
+  "split": "test",
+  "server_id": "playwright",
+  "definition": {
+    "name": "browser_hover",
+    "description": "Hover over element on page",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "description": "Human-readable element description used to obtain permission to interact with the element"
+        },
+        "target": {
+          "type": "string",
+          "description": "Exact target element reference from the page snapshot, or a unique element selector"
+        }
+      },
+      "required": [
+        "target"
+      ]
+    },
+    "annotations": {
+      "title": "Hover mouse",
+      "readOnlyHint": false
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/microsoft/playwright-mcp",
+    "path": "README.md",
+    "license": "Apache-2.0",
+    "changes": "taken from the README tool listing; schema reconstructed from the listed parameters (enums and array item types simplified)"
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "id": "bn-45",
+  "split": "test",
+  "server_id": "grafana",
+  "definition": {
+    "name": "query_prometheus_histogram",
+    "description": "Query Prometheus histogram percentiles from classic histogram '_bucket' series.\n\nGenerates histogram_quantile PromQL. Example: metric='http_duration', percentile=95, labels='job=\"api\"'\n\nTime formats: 'now-1h', '2026-02-02T19:00:00Z', '1738519200000' (Unix ms)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "datasourceUid": {
+          "type": "string",
+          "description": "The UID of the Prometheus datasource"
+        },
+        "metric": {
+          "type": "string",
+          "description": "Base histogram metric name (without _bucket suffix)"
+        },
+        "percentile": {
+          "type": "number",
+          "description": "Percentile to calculate (e.g. 50, 90, 95, 99)"
+        },
+        "labels": {
+          "type": "string",
+          "description": "Label selector (e.g. job=\"api\", service=\"gateway\")"
+        },
+        "rateInterval": {
+          "type": "string",
+          "description": "Rate interval for the query (default: 5m)"
+        },
+        "startTime": {
+          "type": "string",
+          "description": "Start time (default: now-1h). Supports RFC3339, relative (now-1h), or Unix ms."
+        },
+        "endTime": {
+          "type": "string",
+          "description": "End time (default: now). Supports RFC3339, relative, or Unix ms."
+        },
+        "stepSeconds": {
+          "type": "integer",
+          "description": "Step size in seconds for range query (default: 60)"
+        }
+      },
+      "required": [
+        "datasourceUid",
+        "metric",
+        "percentile"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "title": "Query Prometheus histogram percentile"
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/grafana/mcp-grafana",
+    "path": "tools/prometheus.go",
+    "license": "Apache-2.0",
+    "changes": "description and annotations verbatim; schema converted from Go jsonschema struct tags (projectName parameter dropped where present)"
+  }
+}

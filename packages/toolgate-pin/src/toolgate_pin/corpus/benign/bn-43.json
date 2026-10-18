@@ -1,0 +1,57 @@
+{
+  "id": "bn-43",
+  "split": "test",
+  "server_id": "grafana",
+  "definition": {
+    "name": "query_prometheus",
+    "description": "Query a PromQL-compatible datasource (Prometheus, Thanos, Mimir, Cloud Monitoring, etc.) using a PromQL expression. Supports instant queries (single point) and range queries (time range). Time: RFC3339 or relative expressions like 'now', 'now-1h'.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "datasourceUid": {
+          "type": "string",
+          "description": "The UID of the datasource to query"
+        },
+        "expr": {
+          "type": "string",
+          "description": "The PromQL expression to query"
+        },
+        "startTime": {
+          "type": "string",
+          "description": "The start time. Required if queryType is 'range', ignored if queryType is 'instant' Supported formats are RFC3339 or relative to now (e.g. 'now', 'now-1.5h', 'now-2h45m'). Valid time units are 'ns', 'us' (or 'µs'), 'ms', 's', 'm', 'h', 'd'."
+        },
+        "endTime": {
+          "type": "string",
+          "description": "The end time. Supported formats are RFC3339 or relative to now (e.g. 'now', 'now-1.5h', 'now-2h45m'). Valid time units are 'ns', 'us' (or 'µs'), 'ms', 's', 'm', 'h', 'd'."
+        },
+        "stepSeconds": {
+          "type": "integer",
+          "description": "The time series step size in seconds. Required if queryType is 'range', ignored if queryType is 'instant'"
+        },
+        "queryType": {
+          "type": "string",
+          "description": "The type of query to use. Either 'range' or 'instant'"
+        }
+      },
+      "required": [
+        "datasourceUid",
+        "expr",
+        "endTime"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "title": "Query Prometheus metrics"
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/grafana/mcp-grafana",
+    "path": "tools/prometheus.go",
+    "license": "Apache-2.0",
+    "changes": "description and annotations verbatim; schema converted from Go jsonschema struct tags (projectName parameter dropped where present)"
+  }
+}

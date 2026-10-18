@@ -1,0 +1,49 @@
+{
+  "id": "dv-b-09",
+  "split": "dev",
+  "server_id": "files",
+  "definition": {
+    "name": "summarize_file",
+    "description": "Produce a three-sentence summary of a text file. Reads the file with read_file, so the same path rules apply.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Workspace-relative file path"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "inventory": [
+    {
+      "server_id": "files",
+      "name": "read_file",
+      "definition": {
+        "name": "read_file",
+        "description": "Read the full text of a file inside the workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Workspace-relative file path"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        },
+        "annotations": {
+          "readOnlyHint": true
+        }
+      }
+    }
+  ]
+}

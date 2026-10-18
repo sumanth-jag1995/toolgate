@@ -1,0 +1,133 @@
+{
+  "id": "bn-03",
+  "split": "test",
+  "server_id": "github",
+  "definition": {
+    "annotations": {
+      "idempotentHint": false,
+      "readOnlyHint": false,
+      "title": "Create or update file"
+    },
+    "description": "Create or update a single file in a GitHub repository. \nIf updating, you should provide the SHA of the file you want to update. Use this tool to create or update a file in a GitHub repository remotely; do not use it for local file operations.\n\nTo obtain the current blob SHA before updating, call the get_file_contents tool with the same owner, repo, and path, and set its ref parameter to this tool's branch value. The first text result reports the blob SHA for the requested path.\n\nSHA MUST be provided for existing file updates.\n",
+    "inputSchema": {
+      "properties": {
+        "allow_symlink_write": {
+          "default": false,
+          "description": "Set true to update a symbolic link itself; content must be its new target path.",
+          "type": "boolean"
+        },
+        "branch": {
+          "description": "Branch to create/update the file in",
+          "type": "string"
+        },
+        "content": {
+          "description": "Content of the file, exactly as it should appear once written. Do not base64-encode it; this server does that before calling the REST API.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Commit message",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Repository owner (username or organization)",
+          "type": "string",
+          "x-mcp-header": "owner"
+        },
+        "path": {
+          "description": "Path where to create/update the file",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Repository name",
+          "type": "string",
+          "x-mcp-header": "repo"
+        },
+        "sha": {
+          "description": "The blob SHA of the file being replaced. Required if the file already exists. Retrieve it with get_file_contents using the same owner, repo, and path, with ref set to this tool's branch value.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "repo",
+        "path",
+        "content",
+        "message",
+        "branch"
+      ],
+      "type": "object"
+    },
+    "name": "create_or_update_file"
+  },
+  "inventory": [
+    {
+      "server_id": "github",
+      "name": "get_file_contents",
+      "definition": {
+        "annotations": {
+          "idempotentHint": false,
+          "readOnlyHint": true,
+          "title": "Get file or directory contents"
+        },
+        "description": "Get the contents of a file or directory from a GitHub repository",
+        "inputSchema": {
+          "properties": {
+            "fields": {
+              "description": "Subset of fields to return for each entry when the path is a directory. If omitted, all fields are returned. Ignored when the path is a single file. Use this to reduce response size when listing directories and you only need specific fields, e.g. just 'name' and 'type'.",
+              "items": {
+                "enum": [
+                  "type",
+                  "name",
+                  "path",
+                  "size",
+                  "sha",
+                  "url",
+                  "git_url",
+                  "html_url",
+                  "download_url"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "owner": {
+              "description": "Repository owner (username or organization)",
+              "type": "string",
+              "x-mcp-header": "owner"
+            },
+            "path": {
+              "default": "/",
+              "description": "Path to file/directory",
+              "type": "string"
+            },
+            "ref": {
+              "description": "Accepts optional git refs such as `refs/tags/{tag}`, `refs/heads/{branch}` or `refs/pull/{pr_number}/head`",
+              "type": "string"
+            },
+            "repo": {
+              "description": "Repository name",
+              "type": "string",
+              "x-mcp-header": "repo"
+            },
+            "sha": {
+              "description": "Accepts optional commit SHA. If specified, it will be used instead of ref",
+              "type": "string"
+            }
+          },
+          "required": [
+            "owner",
+            "repo"
+          ],
+          "type": "object"
+        },
+        "name": "get_file_contents"
+      }
+    }
+  ],
+  "source": {
+    "repo": "https://github.com/github/github-mcp-server",
+    "path": "pkg/github/__toolsnaps__/create_or_update_file.snap",
+    "license": "MIT",
+    "changes": "verbatim from the toolsnap; icons, _meta and outputSchema fields dropped"
+  }
+}

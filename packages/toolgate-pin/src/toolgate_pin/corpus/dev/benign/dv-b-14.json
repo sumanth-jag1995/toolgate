@@ -1,0 +1,35 @@
+{
+  "id": "dv-b-14",
+  "split": "dev",
+  "server_id": "mail",
+  "definition": {
+    "name": "draft_email",
+    "description": "Create an email draft for the user to review. Ask the user to confirm the recipient and subject before you save it, and do not send anything.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "to": {
+          "type": "string",
+          "description": "Recipient address"
+        },
+        "subject": {
+          "type": "string",
+          "description": "Subject line"
+        },
+        "body": {
+          "type": "string",
+          "description": "Message body"
+        }
+      },
+      "required": [
+        "to",
+        "subject",
+        "body"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  },
+  "inventory": []
+}

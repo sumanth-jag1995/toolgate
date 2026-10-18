@@ -1,0 +1,36 @@
+{
+  "id": "bn-18",
+  "split": "test",
+  "server_id": "memory",
+  "definition": {
+    "name": "search_nodes",
+    "description": "Search for nodes in the knowledge graph based on a query",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "The search query to match against entity names, types, and observation content",
+          "maxLength": 2048
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "title": "Search Nodes"
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/modelcontextprotocol/servers",
+    "path": "src/memory/index.ts",
+    "license": "MIT",
+    "changes": "schema converted from zod to JSON Schema; outputSchema omitted"
+  }
+}

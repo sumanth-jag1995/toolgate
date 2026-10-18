@@ -1,0 +1,27 @@
+{
+  "id": "bn-20",
+  "split": "test",
+  "server_id": "memory",
+  "definition": {
+    "name": "read_graph",
+    "description": "Lee todo el grafo de conocimiento",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "title": "Read Graph"
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/modelcontextprotocol/servers",
+    "path": "src/memory/index.ts",
+    "license": "MIT",
+    "changes": "description translated to Spanish (original: \"Read the entire knowledge graph\"); schema converted from zod; outputSchema omitted"
+  }
+}

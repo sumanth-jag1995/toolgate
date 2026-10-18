@@ -1,0 +1,41 @@
+{
+  "id": "bn-24",
+  "split": "test",
+  "server_id": "git",
+  "definition": {
+    "name": "git_add",
+    "description": "Adds file contents to the staging area",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "repo_path": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "repo_path",
+        "files"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/modelcontextprotocol/servers",
+    "path": "src/git/src/mcp_server_git/server.py",
+    "license": "MIT",
+    "changes": "schema converted from pydantic model_json_schema to a plain JSON Schema (titles dropped)"
+  }
+}

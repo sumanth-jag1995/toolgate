@@ -1,0 +1,30 @@
+{
+  "id": "dv-b-08",
+  "split": "dev",
+  "server_id": "db",
+  "definition": {
+    "name": "run_query",
+    "description": "Run a read-only SQL query against the reporting database. You must not use INSERT, UPDATE or DELETE statements; they will be refused. The SELECT syntax is documented at https://www.postgresql.org/docs/current/sql-select.html.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sql": {
+          "type": "string",
+          "description": "A single SELECT statement"
+        },
+        "row_limit": {
+          "type": "integer",
+          "description": "Rows to return",
+          "default": 100
+        }
+      },
+      "required": [
+        "sql"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "inventory": []
+}

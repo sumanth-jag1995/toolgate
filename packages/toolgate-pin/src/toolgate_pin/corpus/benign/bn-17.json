@@ -1,0 +1,56 @@
+{
+  "id": "bn-17",
+  "split": "test",
+  "server_id": "memory",
+  "definition": {
+    "name": "create_relations",
+    "description": "Create multiple new relations between entities in the knowledge graph. Relations should be in active voice",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string",
+                "description": "The name of the entity where the relation starts"
+              },
+              "to": {
+                "type": "string",
+                "description": "The name of the entity where the relation ends"
+              },
+              "relationType": {
+                "type": "string",
+                "description": "The type of the relation"
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "relationType"
+            ]
+          }
+        }
+      },
+      "required": [
+        "relations"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "title": "Create Relations"
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/modelcontextprotocol/servers",
+    "path": "src/memory/index.ts",
+    "license": "MIT",
+    "changes": "schema converted from zod to JSON Schema; outputSchema omitted"
+  }
+}

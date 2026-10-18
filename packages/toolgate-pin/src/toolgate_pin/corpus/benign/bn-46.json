@@ -1,0 +1,50 @@
+{
+  "id": "bn-46",
+  "split": "test",
+  "server_id": "mongodb",
+  "definition": {
+    "name": "find",
+    "description": "Run a find query against a MongoDB collection",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "database": {
+          "type": "string",
+          "description": "Database name"
+        },
+        "collection": {
+          "type": "string",
+          "description": "Collection name"
+        },
+        "filter": {
+          "type": "object",
+          "description": "The query filter, matching the syntax of the query argument of db.collection.find()"
+        },
+        "projection": {
+          "type": "object",
+          "description": "The projection, matching the syntax of the projection argument of db.collection.find()"
+        },
+        "limit": {
+          "type": "number",
+          "default": 10,
+          "description": "The maximum number of documents to return"
+        },
+        "sort": {
+          "type": "object",
+          "description": "A document, describing the sort order, matching the syntax of the sort argument of cursor.sort(). The keys of the object are the fields to sort on, while the values are the sort directions (1 for ascending, -1 for descending)."
+        }
+      },
+      "required": [
+        "database",
+        "collection"
+      ]
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/mongodb-js/mongodb-mcp-server",
+    "path": "packages/tools-mongodb/src/tools/read/find.ts",
+    "license": "Apache-2.0",
+    "changes": "description verbatim; schema converted from zod (connection arguments and outputSchema omitted; no annotations in source)"
+  }
+}

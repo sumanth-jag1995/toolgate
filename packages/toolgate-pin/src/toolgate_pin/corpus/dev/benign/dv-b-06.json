@@ -1,0 +1,35 @@
+{
+  "id": "dv-b-06",
+  "split": "dev",
+  "server_id": "utils",
+  "definition": {
+    "name": "convert_units",
+    "description": "Convert a quantity between units of length, mass or temperature. The supported unit names follow the conventions described at https://www.nist.gov/pml/owm/metric-si/si-units.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "number",
+          "description": "Quantity to convert"
+        },
+        "from_unit": {
+          "type": "string",
+          "description": "Source unit, e.g. km"
+        },
+        "to_unit": {
+          "type": "string",
+          "description": "Target unit, e.g. mi"
+        }
+      },
+      "required": [
+        "value",
+        "from_unit",
+        "to_unit"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "inventory": []
+}

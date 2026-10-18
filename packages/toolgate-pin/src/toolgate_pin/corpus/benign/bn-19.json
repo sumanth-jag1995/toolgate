@@ -1,0 +1,38 @@
+{
+  "id": "bn-19",
+  "split": "test",
+  "server_id": "memory",
+  "definition": {
+    "name": "open_nodes",
+    "description": "Open specific nodes in the knowledge graph by their names",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "An array of entity names to retrieve"
+        }
+      },
+      "required": [
+        "names"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "title": "Open Nodes"
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/modelcontextprotocol/servers",
+    "path": "src/memory/index.ts",
+    "license": "MIT",
+    "changes": "schema converted from zod to JSON Schema; outputSchema omitted"
+  }
+}

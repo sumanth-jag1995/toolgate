@@ -1,0 +1,33 @@
+{
+  "id": "bn-21",
+  "split": "test",
+  "server_id": "git",
+  "definition": {
+    "name": "git_status",
+    "description": "Shows the working tree status",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "repo_path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo_path"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/modelcontextprotocol/servers",
+    "path": "src/git/src/mcp_server_git/server.py",
+    "license": "MIT",
+    "changes": "schema converted from pydantic model_json_schema to a plain JSON Schema (titles dropped)"
+  }
+}

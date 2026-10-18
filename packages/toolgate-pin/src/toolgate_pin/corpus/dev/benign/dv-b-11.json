@@ -1,0 +1,54 @@
+{
+  "id": "dv-b-11",
+  "split": "dev",
+  "server_id": "files",
+  "definition": {
+    "name": "write_file",
+    "description": "IMPORTANT: replaces the whole file. Call read_file first if you need to keep any of the existing content, and tell the user which path you changed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Workspace-relative file path"
+        },
+        "content": {
+          "type": "string",
+          "description": "New file content"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  },
+  "inventory": [
+    {
+      "server_id": "files",
+      "name": "read_file",
+      "definition": {
+        "name": "read_file",
+        "description": "Read the full text of a file inside the workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Workspace-relative file path"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        },
+        "annotations": {
+          "readOnlyHint": true
+        }
+      }
+    }
+  ]
+}

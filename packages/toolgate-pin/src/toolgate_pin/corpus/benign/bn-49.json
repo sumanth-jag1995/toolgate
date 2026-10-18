@@ -1,0 +1,33 @@
+{
+  "id": "bn-49",
+  "split": "test",
+  "server_id": "mongodb",
+  "definition": {
+    "name": "drop-collection",
+    "description": "Removes a collection or view from the database. The method also removes any indexes associated with the dropped collection.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "database": {
+          "type": "string",
+          "description": "Database name"
+        },
+        "collection": {
+          "type": "string",
+          "description": "Collection name"
+        }
+      },
+      "required": [
+        "database",
+        "collection"
+      ]
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/mongodb-js/mongodb-mcp-server",
+    "path": "packages/tools-mongodb/src/tools/delete/dropCollection.ts",
+    "license": "Apache-2.0",
+    "changes": "description verbatim; schema converted from zod (connection arguments and outputSchema omitted; no annotations in source)"
+  }
+}

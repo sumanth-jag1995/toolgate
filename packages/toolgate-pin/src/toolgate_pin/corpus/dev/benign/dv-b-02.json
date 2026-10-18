@@ -1,0 +1,43 @@
+{
+  "id": "dv-b-02",
+  "split": "dev",
+  "server_id": "calendar",
+  "definition": {
+    "name": "create_event",
+    "description": "Create a calendar event. You must supply start and end times in RFC 3339 format with a timezone offset; see https://www.rfc-editor.org/rfc/rfc3339 for the exact grammar. Events without an end time are rejected.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Event title"
+        },
+        "start": {
+          "type": "string",
+          "description": "RFC 3339 start time"
+        },
+        "end": {
+          "type": "string",
+          "description": "RFC 3339 end time"
+        },
+        "attendees": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "description": "Attendee display name"
+          },
+          "description": "Optional attendee names"
+        }
+      },
+      "required": [
+        "title",
+        "start",
+        "end"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  },
+  "inventory": []
+}

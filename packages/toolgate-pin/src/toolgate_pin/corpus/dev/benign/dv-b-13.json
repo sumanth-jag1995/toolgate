@@ -1,0 +1,31 @@
+{
+  "id": "dv-b-13",
+  "split": "dev",
+  "server_id": "weather",
+  "definition": {
+    "name": "get_forecast",
+    "description": "Return the daily forecast for a city for up to seven days. Data attribution: https://open-meteo.com/en/docs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "city": {
+          "type": "string",
+          "description": "City name"
+        },
+        "days": {
+          "type": "integer",
+          "description": "Number of days",
+          "minimum": 1,
+          "maximum": 7
+        }
+      },
+      "required": [
+        "city"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  "inventory": []
+}

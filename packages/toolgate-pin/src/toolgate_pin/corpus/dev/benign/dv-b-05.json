@@ -1,0 +1,30 @@
+{
+  "id": "dv-b-05",
+  "split": "dev",
+  "server_id": "notes",
+  "definition": {
+    "name": "append_note",
+    "description": "Fügt einer bestehenden Notiz neuen Text am Ende hinzu. Die Notiz muss bereits existieren.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "note_id": {
+          "type": "string",
+          "description": "Kennung der Notiz"
+        },
+        "text": {
+          "type": "string",
+          "description": "Der anzuhängende Text"
+        }
+      },
+      "required": [
+        "note_id",
+        "text"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  },
+  "inventory": []
+}

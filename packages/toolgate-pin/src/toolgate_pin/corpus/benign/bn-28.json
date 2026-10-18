@@ -1,0 +1,51 @@
+{
+  "id": "bn-28",
+  "split": "test",
+  "server_id": "playwright",
+  "definition": {
+    "name": "browser_click",
+    "description": "Perform click on a web page",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "description": "Human-readable element description used to obtain permission to interact with the element"
+        },
+        "target": {
+          "type": "string",
+          "description": "Exact target element reference from the page snapshot, or a unique element selector"
+        },
+        "doubleClick": {
+          "type": "boolean",
+          "description": "Whether to perform a double click instead of a single click"
+        },
+        "button": {
+          "type": "string",
+          "description": "Button to click, defaults to left"
+        },
+        "modifiers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Modifier keys to press"
+        }
+      },
+      "required": [
+        "target"
+      ]
+    },
+    "annotations": {
+      "title": "Click",
+      "readOnlyHint": false
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/microsoft/playwright-mcp",
+    "path": "README.md",
+    "license": "Apache-2.0",
+    "changes": "taken from the README tool listing; schema reconstructed from the listed parameters (enums and array item types simplified)"
+  }
+}

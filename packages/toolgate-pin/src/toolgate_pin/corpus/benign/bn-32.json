@@ -1,0 +1,37 @@
+{
+  "id": "bn-32",
+  "split": "test",
+  "server_id": "playwright",
+  "definition": {
+    "name": "browser_find",
+    "description": "Search the accessibility snapshot of the current page for text or a regular expression. Returns matching snapshot nodes with a few lines of surrounding context (like search snippets), each shown under its path from the root of the tree, which is cheaper than capturing the whole snapshot when you only need to locate an element and its ref.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Plain text to search for in the page snapshot (case-insensitive substring match). Provide either text or regex, not both."
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression to search for in the page snapshot. Matching is case-sensitive by default; wrap the pattern in slashes to add flags, e.g. \"/error/i\" for case-insensitive. Provide either text or regex, not both."
+        },
+        "filename": {
+          "type": "string",
+          "description": "Save results to a file instead of returning them in the response. Relative file names are resolved against the workspace root."
+        }
+      }
+    },
+    "annotations": {
+      "title": "Find in page snapshot",
+      "readOnlyHint": true
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/microsoft/playwright-mcp",
+    "path": "README.md",
+    "license": "Apache-2.0",
+    "changes": "taken from the README tool listing; schema reconstructed from the listed parameters (enums and array item types simplified)"
+  }
+}

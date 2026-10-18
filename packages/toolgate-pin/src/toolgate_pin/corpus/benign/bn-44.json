@@ -1,0 +1,57 @@
+{
+  "id": "bn-44",
+  "split": "test",
+  "server_id": "grafana",
+  "definition": {
+    "name": "list_prometheus_metric_names",
+    "description": "Lists metric names in a PromQL-compatible datasource (Prometheus, Thanos, Mimir, Cloud Monitoring, etc.). Filters metric names using the provided regex. Supports pagination (page * limit must not exceed 10000) and an optional time range to restrict results to metrics active within that window. Cloud Monitoring ignores the time range.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "datasourceUid": {
+          "type": "string",
+          "description": "The UID of the datasource to query"
+        },
+        "regex": {
+          "type": "string",
+          "description": "The regex to match against the metric names"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 10,
+          "description": "The maximum number of results to return"
+        },
+        "page": {
+          "type": "integer",
+          "default": 1,
+          "description": "The page number to return"
+        },
+        "startRfc3339": {
+          "type": "string",
+          "description": "Optionally, the start time of the time range to filter the results by. Supports RFC3339 or relative time (e.g. 'now-1h')"
+        },
+        "endRfc3339": {
+          "type": "string",
+          "description": "Optionally, the end time of the time range to filter the results by. Supports RFC3339 or relative time (e.g. 'now')"
+        }
+      },
+      "required": [
+        "datasourceUid"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "title": "List Prometheus metric names"
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/grafana/mcp-grafana",
+    "path": "tools/prometheus.go",
+    "license": "Apache-2.0",
+    "changes": "description and annotations verbatim; schema converted from Go jsonschema struct tags (projectName parameter dropped where present)"
+  }
+}

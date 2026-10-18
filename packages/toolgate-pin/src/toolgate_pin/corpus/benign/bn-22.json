@@ -1,0 +1,45 @@
+{
+  "id": "bn-22",
+  "split": "test",
+  "server_id": "git",
+  "definition": {
+    "name": "git_log",
+    "description": "Zeigt das Commit-Protokoll an",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "repo_path": {
+          "type": "string"
+        },
+        "max_count": {
+          "type": "integer",
+          "default": 10
+        },
+        "start_timestamp": {
+          "type": "string",
+          "description": "Start timestamp for filtering commits. Accepts: ISO 8601 format (e.g., '2024-01-15T14:30:25'), relative dates (e.g., '2 weeks ago', 'yesterday'), or absolute dates (e.g., '2024-01-15', 'Jan 15 2024')"
+        },
+        "end_timestamp": {
+          "type": "string",
+          "description": "End timestamp for filtering commits. Accepts: ISO 8601 format (e.g., '2024-01-15T14:30:25'), relative dates (e.g., '2 weeks ago', 'yesterday'), or absolute dates (e.g., '2024-01-15', 'Jan 15 2024')"
+        }
+      },
+      "required": [
+        "repo_path"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  "inventory": [],
+  "source": {
+    "repo": "https://github.com/modelcontextprotocol/servers",
+    "path": "src/git/src/mcp_server_git/server.py",
+    "license": "MIT",
+    "changes": "description translated to German (original: \"Shows the commit logs\"); parameter descriptions left in English; schema converted from pydantic model_json_schema to a plain JSON Schema (titles dropped)"
+  }
+}

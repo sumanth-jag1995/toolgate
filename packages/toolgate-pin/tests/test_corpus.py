@@ -123,7 +123,11 @@ def test_techniques_unique_per_family():
 
 
 def test_only_reserved_hosts():
+    # The reserved-host rule covers attack files only; benign definitions are
+    # real public MCP tools and legitimately carry real documentation URLs.
     for f in _corpus_files():
+        if "benign" in f.parts:
+            continue
         text = f.read_text(encoding="utf-8")
         for host in _URL_HOST.findall(text) + _EMAIL_HOST.findall(text):
             host = host.rstrip(".").lower()
@@ -200,6 +204,60 @@ def test_split_must_match_requested(tmp_path):
     _write(tmp_path / "dev" / "malicious" / "dp-01.json", data)
     with pytest.raises(ValueError, match="split"):
         _load_corpus(tmp_path, "dev")
+
+
+def test_benign_count_and_sources():
+    c = load_corpus("test")
+    assert len(c.benign) == 50 and all(b.source for b in c.benign)
+
+
+def test_benign_repo_diversity():
+    assert len({b.source.repo for b in load_corpus().benign}) >= 6
+
+
+def test_sources_md_lists_every_id():
+    root = importlib.resources.files("toolgate_pin.corpus")
+    text = (root / "benign" / "SOURCES.md").read_text(encoding="utf-8")
+    for b in load_corpus().benign:
+        assert b.id in text, b.id
+        assert b.source.repo in text and b.source.license in text, b.id
+
+
+def test_dev_benign_count():
+    assert len(load_corpus("dev").benign) == 15
+    assert all(b.source is None for b in load_corpus("dev").benign)
+
+
+def test_no_duplicate_definitions_across_splits():
+    test_hashes = {pin_hash(b.definition) for b in load_corpus("test").benign}
+    dev_hashes = {pin_hash(b.definition) for b in load_corpus("dev").benign}
+    assert test_hashes.isdisjoint(dev_hashes)
+    assert len(test_hashes) == 50 and len(dev_hashes) == 15
+
+
+def test_benign_inventory_shares_server_id():
+    for b in TEST.benign + DEV.benign:
+        assert all(e.server_id == b.server_id for e in b.inventory), b.id
+
+
+def test_dev_benign_has_hard_negative_kinds():
+    descs = [b.definition["description"] for b in DEV.benign]
+    assert any(
+        re.search(r"\b(must|should|always|never|important)\b", d, re.IGNORECASE)
+        for d in descs
+    )
+    assert any("https://" in d for d in descs)
+    assert any(b.inventory for b in DEV.benign)
+    assert any(not d.isascii() for d in descs)
+
+
+def test_test_benign_hard_negative_kinds():
+    descs = [b.definition["description"] for b in TEST.benign]
+    assert any(re.search(r"\b(must|should)\b", d, re.IGNORECASE) for d in descs)
+    assert any("https://" in d for d in descs)
+    assert sum(1 for b in TEST.benign if b.inventory) >= 4
+    non_english = {"bn-20", "bn-22", "bn-37"}
+    assert non_english <= {b.id for b in TEST.benign}
 
 
 if __name__ == "__main__":
