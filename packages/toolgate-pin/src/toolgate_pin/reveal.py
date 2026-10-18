@@ -31,6 +31,17 @@ def reveal(text: str, *, ascii_only: bool = False) -> str:
     return "".join(out)
 
 
+def one_line(text: str, *, max_chars: int = 300) -> str:
+    """Untrusted text (say, an LLM judge's reason) for one output line: clipped
+    to ``max_chars``, hidden characters revealed and control characters
+    (newlines, ESC, ...) shown as ``⟦U+XXXX⟧`` so they cannot move the cursor."""
+    clipped = text if len(text) <= max_chars else text[:max_chars] + "…"
+    return "".join(
+        f"⟦U+{ord(ch):04X}⟧" if unicodedata.category(ch) == "Cc" else ch
+        for ch in reveal(clipped)
+    )
+
+
 def decode_tag_text(text: str) -> str | None:
     if not any(0xE0000 <= ord(c) <= 0xE007F for c in text):
         return None

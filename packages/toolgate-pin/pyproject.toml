@@ -22,6 +22,7 @@ build-backend = "hatchling.build"
 packages = ["src/toolgate_pin"]
 include = [
     "src/toolgate_pin/**/*.py",
+    "src/toolgate_pin/py.typed",
     "src/toolgate_pin/corpus/**/*.json",
     "src/toolgate_pin/corpus/**/*.md",
 ]

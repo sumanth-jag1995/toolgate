@@ -9,17 +9,17 @@ from __future__ import annotations
 
 import re
 import shlex
+import warnings
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import timedelta
+from typing import Any
 from urllib.parse import urlsplit
 
 import anyio
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.client.streamable_http import streamable_http_client
 from mcp.server.fastmcp import FastMCP
-from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.shared.memory import create_client_server_memory_streams
 from mcp.types import InitializeResult, PaginatedRequestParams, Tool
 
@@ -27,6 +27,7 @@ from toolgate_pin.models import Target
 
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _READ_TIMEOUT = timedelta(seconds=30)
+MAX_TOOL_PAGES = 1000
 
 
 class UsageError(Exception):
@@ -35,6 +36,10 @@ class UsageError(Exception):
 
 class ConnectError(Exception):
     """Could not reach or talk to a server. ``str()`` is the target display only."""
+
+
+class ToolListError(Exception):
+    """The server's tools/list pagination misbehaved. Messages carry no server data."""
 
 
 def _split_header(h: str) -> tuple[str, str]:
@@ -127,6 +132,32 @@ def target_display(target: Target) -> str:
     return "<no target>"
 
 
+async def _http_streams(
+    stack: AsyncExitStack, url: str, headers: dict[str, str]
+) -> tuple[Any, Any]:
+    """Streamable HTTP streams, imported lazily: ``streamable_http_client``
+    exists only in mcp>=1.24; older releases have ``streamablehttp_client``."""
+    from mcp.client import streamable_http
+
+    new_client = getattr(streamable_http, "streamable_http_client", None)
+    if new_client is not None:
+        from mcp.shared._httpx_utils import create_mcp_http_client
+
+        client = await stack.enter_async_context(
+            create_mcp_http_client(headers=headers)
+        )
+        read, write, _ = await stack.enter_async_context(
+            new_client(url, http_client=client)
+        )
+        return read, write
+    with warnings.catch_warnings():
+        # Deprecated in newer mcp releases; only reached on older ones.
+        warnings.simplefilter("ignore", DeprecationWarning)
+        old = streamable_http.streamablehttp_client(url, headers=headers)
+    read, write, _ = await stack.enter_async_context(old)
+    return read, write
+
+
 @asynccontextmanager
 async def open_session(
     target: Target, env: Mapping[str, str]
@@ -151,12 +182,7 @@ async def open_session(
     try:
         async with AsyncExitStack() as stack:
             if target.url is not None:
-                client = await stack.enter_async_context(
-                    create_mcp_http_client(headers=headers)
-                )
-                read, write, _ = await stack.enter_async_context(
-                    streamable_http_client(target.url, http_client=client)
-                )
+                read, write = await _http_streams(stack, target.url, headers)
             else:
                 params = StdioServerParameters(
                     command=target.command[0],
@@ -207,15 +233,26 @@ async def fetch_tools(
 ) -> tuple[InitializeResult, list[Tool]]:
     """Connect, initialize once, and list every tool (following pagination)."""
     async with open_session(target, env) as (session, init):
-        tools: list[Tool] = []
-        cursor: str | None = None
-        while True:
-            params = PaginatedRequestParams(cursor=cursor) if cursor else None
-            page = await session.list_tools(params=params)
-            tools.extend(page.tools)
-            cursor = page.nextCursor
-            if not cursor:
-                return init, tools
+        return init, await list_all_tools(session)
+
+
+async def list_all_tools(session: Any) -> list[Tool]:
+    """Every tool, following ``nextCursor``. Raises ToolListError on a repeated
+    cursor or after MAX_TOOL_PAGES pages, so a hostile server cannot loop us."""
+    tools: list[Tool] = []
+    cursor: str | None = None
+    seen: set[str] = set()
+    for _ in range(MAX_TOOL_PAGES):
+        params = PaginatedRequestParams(cursor=cursor) if cursor else None
+        page = await session.list_tools(params=params)
+        tools.extend(page.tools)
+        cursor = page.nextCursor
+        if not cursor:
+            return tools
+        if cursor in seen:
+            raise ToolListError("the server repeated a tools/list cursor")
+        seen.add(cursor)
+    raise ToolListError(f"tools/list did not finish within {MAX_TOOL_PAGES} pages")
 
 
 def describe_error(exc: ConnectError) -> str:
@@ -224,5 +261,7 @@ def describe_error(exc: ConnectError) -> str:
     leaf: BaseException | None = exc.__cause__
     while isinstance(leaf, BaseExceptionGroup) and leaf.exceptions:
         leaf = leaf.exceptions[0]
+    if isinstance(leaf, ToolListError):
+        return f"cannot list tools from {exc}: {leaf}"
     suffix = f" ({type(leaf).__name__})" if leaf is not None else ""
     return f"cannot connect to {exc}{suffix}"

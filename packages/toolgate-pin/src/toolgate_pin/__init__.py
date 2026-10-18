@@ -16,7 +16,7 @@ from toolgate_pin.models import (
 )
 from toolgate_pin.pinner import Pinner
 from toolgate_pin.scanner import ScanConfig, scan_definition, scan_output
-from toolgate_pin.store import InMemoryStore, LockfileError, LockfileStore
+from toolgate_pin.store import InMemoryStore, LockfileError, LockfileStore, PinStore
 
 __all__ = [
     "HASHED_FIELDS",
@@ -27,6 +27,7 @@ __all__ = [
     "LockfileError",
     "LockfileStore",
     "PinSet",
+    "PinStore",
     "Pinner",
     "Quarantine",
     "ScanConfig",

@@ -10,14 +10,20 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 from toolgate_pin.corpus import InventoryEntry, load_corpus
 from toolgate_pin.models import InventoryTool, PinSet, ScanReport, Target
 from toolgate_pin.pinner import Pinner
 from toolgate_pin.pinning import pin_server
-from toolgate_pin.scanner import TIERS, decide_verdict, scan_definition, scan_output
+from toolgate_pin.scanner import (
+    TIERS,
+    decide_verdict,
+    scan_definition,
+    scan_output,
+    unavailable_reason,
+)
 from toolgate_pin.scanner.config import DEFAULT_CONFIG
 from toolgate_pin.store import InMemoryStore
 
@@ -45,6 +51,8 @@ class BenchResult:
     benign_fp: dict[str, int]
     benign_n: int
     split: str
+    # tier -> short cause ("HTTP 429", "OSError") when the scorer reported one
+    unavailable_reasons: dict[str, str] = field(default_factory=dict)
 
 
 def _inventory(entries: Sequence[InventoryEntry]) -> tuple[InventoryTool, ...]:
@@ -86,6 +94,14 @@ def run_bench(
     requested = tuple(t for t in TIERS if t == "rules" or t in tiers)
     corpus = load_corpus(split)
     reports: list[tuple[str, ScanReport]] = []  # (row key, report)
+    reasons: dict[str, str] = {}
+
+    def note_unavailable(report: ScanReport) -> None:
+        for tier in report.unavailable:
+            why = unavailable_reason(tier, judge=judge, classifier=classifier)
+            if why is not None:
+                reasons.setdefault(tier, why)
+
     pin_caught = 0
     output_hits = output_n = 0
 
@@ -96,20 +112,17 @@ def run_bench(
             pin_caught += _caught_by_pin(v.server_id, v.approved, v.mutated)
         else:
             tool, prior = v.approved, None
-        reports.append(
-            (
-                v.family,
-                scan_definition(
-                    tool,
-                    server_id=v.server_id,
-                    prior=prior,
-                    inventory=inventory,
-                    tiers=requested,
-                    judge=judge,
-                    classifier=classifier,
-                ),
-            )
+        report = scan_definition(
+            tool,
+            server_id=v.server_id,
+            prior=prior,
+            inventory=inventory,
+            tiers=requested,
+            judge=judge,
+            classifier=classifier,
         )
+        note_unavailable(report)
+        reports.append((v.family, report))
         if v.output_sample is not None:
             output_n += 1
             out = scan_output(
@@ -118,19 +131,16 @@ def run_bench(
             output_hits += out.verdict != "benign"
 
     for b in corpus.benign:
-        reports.append(
-            (
-                "benign",
-                scan_definition(
-                    b.definition,
-                    server_id=b.server_id,
-                    inventory=_inventory(b.inventory),
-                    tiers=requested,
-                    judge=judge,
-                    classifier=classifier,
-                ),
-            )
+        report = scan_definition(
+            b.definition,
+            server_id=b.server_id,
+            inventory=_inventory(b.inventory),
+            tiers=requested,
+            judge=judge,
+            classifier=classifier,
         )
+        note_unavailable(report)
+        reports.append(("benign", report))
 
     # A tier counts as run only if it ran on every item; a partial run (say,
     # judge API failures part-way) is reported unavailable, never as a pass.
@@ -170,6 +180,7 @@ def run_bench(
         benign_fp=counts["benign"],
         benign_n=sizes["benign"],
         split=split,
+        unavailable_reasons={t: reasons[t] for t in unavailable if t in reasons},
     )
 
 
@@ -186,7 +197,9 @@ def _header(result: BenchResult) -> str:
     if result.judge_model:
         tiers += f" (model: {result.judge_model})"
     if result.unavailable:
-        tiers += f"; unavailable: {', '.join(result.unavailable)}"
+        why = result.unavailable_reasons
+        named = (f"{t} ({why[t]})" if t in why else t for t in result.unavailable)
+        tiers += f"; unavailable: {', '.join(named)}"
     return (
         f"toolgate-pin bench {DASH} tiers: {tiers}   "
         f"corpus {CORPUS_VERSION}, split {result.split}"

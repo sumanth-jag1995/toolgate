@@ -12,6 +12,8 @@ Requires Python 3.11 or newer. Core dependencies are `mcp` and `rfc8785`.
 $ uvx toolgate-pin demo
 ```
 
+Until the package is published on PyPI, point `uvx` at a wheel or the git repository instead: `uvx --from <path-to-wheel or git URL> toolgate-pin demo`.
+
 No keys, Docker or database. The command starts a bundled MCP server in-process, pins its four tools, then changes one tool's description to carry a hidden instruction written in Unicode tag characters. Real output (long lines trimmed with `…`):
 
 ```text
@@ -50,7 +52,7 @@ insurer-demo: ok (4 tools match the lockfile)
 check passed
 ```
 
-`approve` shows a diff and scan findings for each new or changed tool and asks for confirmation (`--yes` skips it). `check` with no target checks every server in the lockfile using its stored target, which is the form to put in CI. Now let the server change a tool:
+`approve` shows a diff and scan findings for each new or changed tool (plus the classifier score and the judge's verdict and reasons when `--classifier` or `--judge` ran) and asks for confirmation (`--yes` skips it). `check` with no target checks every server in the lockfile using its stored target, which is the form to put in CI; `check --name ID` checks just that pinned server. Now let the server change a tool:
 
 ```console
 $ toolgate-pin check --stdio -- toolgate-pin demo-server --mutated
@@ -128,7 +130,7 @@ Server identity is the `server_id` plus `serverInfo.name`. The transport target 
 
 ## Lockfile format
 
-`toolgate.lock.json` (override with `--lockfile`) is JSON with 2-space indent, sorted keys and a trailing newline, so git diffs stay clean.
+`toolgate.lock.json` (override with `--lockfile`) is JSON with 2-space indent, sorted keys and a trailing newline, so git diffs stay clean. An abridged example (one tool shown, definition elided):
 
 ```json
 {
@@ -156,7 +158,13 @@ A corrupt lockfile or one with a newer `version` is rejected at load, and the CL
 
 **Credentials.** Header templates are stored as typed and must use `${VAR}` (for example `--header 'Authorization: Bearer ${TOOLGATE_TOKEN}'`); a literal value is refused. The variable is expanded from the environment at run time, and expanded values are never written to the lockfile, logs or traces. A missing variable makes `check` exit 2 and name the variable. Server URLs with user info (`user:pass@`) or any query string are refused, because they would be written to the lockfile. `--name` will not carry stored headers to a target on a different origin than the pinned URL.
 
-**Review `target.url` like code.** A bare `check` sends the stored header templates, expanded from your environment, to the URL in the lockfile. A pull request that changes a server's `target.url` can redirect those credentials, so treat that line as security-relevant in review.
+**Review `target` like code.** A bare `check` connects to whatever each server's `target` in the lockfile says, so the whole block is security-relevant in review:
+
+- `target.url`: the stored header templates, expanded from your environment, are sent to this URL. A pull request that changes it can redirect those credentials.
+- `target.headers`: a pull request can add a template such as `${AWS_SECRET_ACCESS_KEY}` and have `check` send any variable from the CI environment to the pinned URL.
+- `target.command`: for a stdio server, `check` runs this command. An edit to it is command execution in CI on the next bare `check`.
+
+Stdio servers inherit the caller's full environment (including `PATH` and any secrets in it), because many servers need it to start. Run `check` in a CI job that holds only the secrets your MCP servers need.
 
 ## Exit codes
 
@@ -175,7 +183,7 @@ A corrupt lockfile or one with a newer `version` is rejected at load, and the CL
 |---|---|---|---|
 | rules | core | default | 17 rule IDs: hidden Unicode (`TG-UNI-*`), instructions aimed at the model (`TG-INS-*`), references to tools on other servers and ordering phrasing (`TG-XREF-*`), exfiltration indicators (`TG-EXF-*`), side-channel parameters (`TG-SIDE-001`), cross-server name shadowing (`TG-SHADOW-001`) |
 | classifier | `pip install "toolgate-pin[classifier]"` | `--classifier` | Local ONNX export of `protectai/deberta-v3-base-prompt-injection-v2` (Apache-2.0) via `onnxruntime`, `tokenizers` and `huggingface-hub`, CPU only. The ~700 MB model is downloaded on first use into the Hugging Face cache, pinned to one commit. Score is the maximum injection probability over the description and every parameter description (512 tokens each). Thresholds: malicious at 0.999, suspicious at 0.998, tuned on the dev split only. |
-| judge | core | `--judge` | LLM judge through OpenRouter. Needs `OPENROUTER_API_KEY`; model from `TOOLGATE_JUDGE_MODEL`, default `google/gemma-4-31b-it:free` (pending live validation). Results cached by definition hash, prompt version and model; `--no-cache` bypasses. A failed API call marks the tier unavailable and is never counted as a pass. |
+| judge | core | `--judge` | LLM judge through OpenRouter. Needs `OPENROUTER_API_KEY`; model from `TOOLGATE_JUDGE_MODEL`, default `google/gemma-4-31b-it:free` (pending live validation). Results cached by definition hash, prompt version and model; `bench --no-cache` bypasses the cache (`approve --judge` always uses it). A failed API call marks the tier unavailable and is never counted as a pass. |
 
 The other extra is `[otel]` (`opentelemetry-api`) for tracing.
 
@@ -209,7 +217,7 @@ Limitations to weigh when reading the numbers:
 
 - The dev split overlaps some test-split techniques, and several rug-pull variants differ mainly in wording, so detection rates may overstate how well the rules generalise to attacks written by someone else.
 - Three variants (`rp-04`, `rp-05`, `us-03`) cannot produce a canary leak in the later agent evaluation. The `us-03` bidi variant hides its payload from the model rather than from the human reader.
-- The test split was run twice: once when the rules were frozen, and once after a review fix to the send-to-host rule. Both runs gave identical numbers. Classifier thresholds were tuned on the dev split only, and the test split was then run once with the classifier.
+- The test split was also scanned once by the corpus author with the untuned rules, before tuning; those numbers were not shown to the person tuning the rules. After that, the test split was run twice: once when the rules were frozen, and once after a review fix to the send-to-host rule. Both runs gave identical numbers. Classifier thresholds were tuned on the dev split only, and the test split was then run once with the classifier.
 
 ## Results
 

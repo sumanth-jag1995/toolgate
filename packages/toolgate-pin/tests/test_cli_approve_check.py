@@ -516,3 +516,156 @@ def test_named_check_refuses_cross_origin_headers(
     assert SECRET not in out
     assert all(SECRET not in a for a in seen)
     assert seen == []
+
+
+def test_http_falls_back_to_deprecated_client(tmp_path, capsys, monkeypatch, http_demo):
+    """mcp < 1.24 has only streamablehttp_client(url, headers=...)."""
+    import warnings
+    from contextlib import asynccontextmanager
+
+    import httpx
+    import mcp.client.streamable_http as sh
+
+    url, seen = http_demo
+    new_client = sh.streamable_http_client
+    monkeypatch.delattr(sh, "streamable_http_client")
+    calls: list[tuple[str, dict]] = []
+
+    @asynccontextmanager
+    async def _streams(u, headers):
+        async with (
+            httpx.AsyncClient(headers=headers) as client,
+            new_client(u, http_client=client) as streams,
+        ):
+            yield streams
+
+    def old_client(u, headers=None):
+        warnings.warn("fallback-sentinel deprecated", DeprecationWarning, stacklevel=2)
+        calls.append((u, dict(headers or {})))
+        return _streams(u, headers)
+
+    monkeypatch.setattr(sh, "streamablehttp_client", old_client, raising=False)
+    monkeypatch.setenv("TG_TOKEN", SECRET)
+    lock = tmp_path / "toolgate.lock.json"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _approve_http(capsys, lock, url)
+    assert calls == [(url, {"Authorization": f"Bearer {SECRET}"})]
+    assert seen and all(a == f"Bearer {SECRET}" for a in seen)
+    assert not [w for w in caught if "fallback-sentinel" in str(w.message)]
+
+
+def test_check_name_only_checks_that_server(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("TG_TOKEN", raising=False)
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock) == 0
+    store = LockfileStore(lock)
+    broken = ServerPin(
+        server_id="remote",
+        server_name="insurer-demo",
+        target=Target(
+            url="http://127.0.0.1:9/mcp",
+            headers=("Authorization: Bearer ${TG_TOKEN}",),
+        ),
+        tools={},
+    )
+    store.save(store.load().with_server(broken))
+    capsys.readouterr()
+    code, out = _run(capsys, "check", "--lockfile", str(lock), "--name", "insurer-demo")
+    assert code == 0, out
+    assert "insurer-demo: ok" in out
+    assert "remote" not in out and "TG_TOKEN" not in out
+
+
+def test_check_name_unknown_exit_2(tmp_path, capsys):
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock) == 0
+    capsys.readouterr()
+    code, out = _run(
+        capsys, "check", "--lockfile", str(lock), "--name", "does-not-exist"
+    )
+    assert code == 2
+    assert "server does-not-exist is not pinned" in out
+    assert "check passed" not in out
+
+
+class _FakeJudge:
+    model = "fake/model"
+
+    def __init__(self, verdicts=None, error=None):
+        self.verdicts = verdicts or {}
+        self.error = error
+        self.last_error: str | None = None
+
+    def judge(self, tool, *, prior):
+        from toolgate_pin.models import JudgeResult
+
+        if self.error:
+            self.last_error = self.error
+            return None
+        verdict, reasons = self.verdicts.get(tool["name"], ("benign", ()))
+        return JudgeResult(verdict, reasons, self.model)
+
+
+class _FakeClassifier:
+    load_error: str | None = None
+
+    def score(self, tool):
+        return 0.1234
+
+
+def _with_fake_tiers(monkeypatch, judge, clf_cls=_FakeClassifier) -> None:
+    from toolgate_pin.scanner import classifier
+    from toolgate_pin.scanner.judge import Judge
+
+    monkeypatch.setattr(Judge, "from_env", classmethod(lambda cls, **k: judge))
+    monkeypatch.setattr(classifier, "available", lambda: True)
+    monkeypatch.setattr(classifier, "Classifier", clf_cls)
+
+
+def test_approve_prints_classifier_and_judge_evidence(tmp_path, capsys, monkeypatch):
+    long_reason = "y" * 2000
+    judge = _FakeJudge(
+        {
+            "get_claim_status": (
+                "malicious",
+                ("asks to\x1b[2J exfiltrate\u200b data", long_reason),
+            )
+        }
+    )
+    _with_fake_tiers(monkeypatch, judge)
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock, "--judge", "--classifier") == 3
+    cap = capsys.readouterr()
+    out = cap.out + cap.err
+    assert "classifier score: 0.1234" in out
+    assert "judge (fake/model): malicious" in out
+    assert "judge (fake/model): benign" in out
+    assert "\x1b" not in out and "\u27e6U+001B\u27e7" in out
+    assert "\u27e6U+200B ZERO WIDTH SPACE\u27e7" in out
+    assert long_reason not in out and "y" * 100 in out
+    assert "blocked: get_claim_status (judge) judged malicious" in cap.err
+    assert not lock.exists()
+
+
+def test_approve_blocked_names_rules_tier(tmp_path, capsys):
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock, cmd=[*DEMO, "--mutated"]) == 3
+    assert "blocked: get_claim_status (rules) judged malicious" in (
+        capsys.readouterr().err
+    )
+
+
+def test_approve_unavailable_note_names_the_cause(tmp_path, capsys, monkeypatch):
+    class _BrokenClassifier:
+        load_error = "OSError"
+
+        def score(self, tool):
+            raise RuntimeError("model failed to load")
+
+    _with_fake_tiers(monkeypatch, _FakeJudge(error="HTTP 429"), _BrokenClassifier)
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock, "--judge", "--classifier") == 0
+    out = capsys.readouterr().out
+    assert "note: the judge tier is unavailable (HTTP 429); it did not run" in out
+    assert "note: the classifier tier is unavailable (OSError); it did not run" in out

@@ -80,3 +80,19 @@ def test_approve_classifier_flag_runs_tier(tmp_path, capsys):
 
 def _clf():
     return classifier.Classifier()
+
+
+def test_load_failure_is_memoized(monkeypatch):
+    calls: list[int] = []
+
+    def failing_load(self):
+        calls.append(1)
+        raise OSError("download failed")
+
+    monkeypatch.setattr(classifier.Classifier, "_load", failing_load)
+    clf = classifier.Classifier()
+    for _ in range(3):
+        with pytest.raises(classifier.ClassifierLoadError):
+            clf.score({"name": "t", "description": "hello"})
+    assert calls == [1]
+    assert clf.load_error == "OSError"

@@ -285,3 +285,29 @@ def test_scan_span_attributes(monkeypatch):
             "SECRET" in str(v) or "Ignore" in str(v) for v in s.attributes.values()
         )
         assert not s.events
+
+
+def test_removed_tool_with_undiffable_pin_does_not_raise(tools):
+    # A programmatic PinStore can hold a definition diff() cannot render.
+    pins = _pinset(tools)
+    sp = pins.get("core-read")
+    bad = ToolPin(
+        name="read_c",
+        hash=sp.tools["read_c"].hash,
+        definition={"name": "read_c", "description": {"not", "json"}},
+        approved_by="me",
+        approved_at="2026-10-18T00:00:00Z",
+        scan={"verdict": "benign", "rule_ids": [], "tiers": ["rules"]},
+    )
+    sp = ServerPin(sp.server_id, sp.server_name, sp.target, {**sp.tools, "read_c": bad})
+    r = Pinner(InMemoryStore(PinSet({}).with_server(sp))).verify("core-read", tools[:2])
+    (q,) = r.quarantined
+    assert q.reason == "removed" and "could not be canonicalized" in q.diff
+
+
+def test_pin_store_is_public():
+    import toolgate_pin
+
+    assert toolgate_pin.PinStore.__name__ == "PinStore"
+    assert "PinStore" in toolgate_pin.__all__
+    assert all(hasattr(toolgate_pin, n) for n in toolgate_pin.__all__)

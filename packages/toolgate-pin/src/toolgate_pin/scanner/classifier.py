@@ -50,11 +50,33 @@ def texts_of(tool: dict[str, Any]) -> list[str]:
     return [t for t in out if t.strip()]
 
 
+class ClassifierLoadError(RuntimeError):
+    """The model could not be loaded; raised again, without retrying, on every
+    later ``score`` call of the same instance."""
+
+
 class Classifier:
     def __init__(self, *, revision: str = MODEL_REVISION) -> None:
         self.revision = revision
         self._session: Any = None
         self._tokenizer: Any = None
+        # Exception type of a failed load (never a message: it may hold a URL).
+        self.load_error: str | None = None
+
+    def _ensure_loaded(self) -> None:
+        if self.load_error is not None:
+            raise ClassifierLoadError(
+                f"classifier model unavailable ({self.load_error})"
+            )
+        if self._session is not None:
+            return
+        try:
+            self._load()
+        except Exception as exc:
+            self.load_error = type(exc).__name__
+            raise ClassifierLoadError(
+                f"classifier model unavailable ({self.load_error})"
+            ) from exc
 
     def _load(self) -> None:
         # Symlinks are unavailable on many Windows setups; the cache still works.
@@ -94,6 +116,5 @@ class Classifier:
 
     def score(self, tool: dict[str, Any]) -> float:
         """Max injection probability over the description and parameter descriptions."""
-        if self._session is None:
-            self._load()
+        self._ensure_loaded()
         return max((self._score_text(t) for t in texts_of(tool)), default=0.0)

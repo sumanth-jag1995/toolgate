@@ -70,3 +70,14 @@ def test_diff_line_separator_swap_is_not_empty():
         d = diff({"d": "a b"}, {"d": f"a{sep}b"})
         assert d, sep
         assert f"U+{ord(sep):04X}" in d
+
+
+def test_one_line_sanitises_and_clips():
+    from toolgate_pin.reveal import one_line
+
+    out = one_line("ok\x1b[31m red\nnext\u200b" + "x" * 500, max_chars=40)
+    assert "\x1b" not in out and "\n" not in out and "\u200b" not in out
+    assert "\u27e6U+001B\u27e7" in out and "\u27e6U+000A\u27e7" in out
+    assert "\u27e6U+200B ZERO WIDTH SPACE\u27e7" in out
+    assert out.endswith("…") and "x" * 30 not in out
+    assert one_line("plain") == "plain"

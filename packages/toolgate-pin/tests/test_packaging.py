@@ -44,6 +44,7 @@ def test_wheel_contains_corpus_and_runs_demo(tmp_path):
     assert len(malicious) >= 38
     assert len(benign) == 65
     assert base + "benign/SOURCES.md" in names
+    assert "toolgate_pin/py.typed" in names
     # The README is the package's long description.
     assert "five-minute" in metadata.lower()
 

@@ -23,6 +23,7 @@ __all__ = [
     "decide_verdict",
     "scan_definition",
     "scan_output",
+    "unavailable_reason",
 ]
 
 
@@ -150,6 +151,18 @@ def _run_judge(
         return judge.judge(definition, prior=prior)
     except Exception:  # noqa: BLE001  a broken tier is reported unavailable
         return None
+
+
+def unavailable_reason(tier: str, *, judge: Any, classifier: Any) -> str | None:
+    """Why ``tier`` did not run, from the scorer's own short error code: the
+    judge's ``last_error`` ("HTTP 429", "invalid JSON", an exception type) or
+    the classifier's ``load_error`` (an exception type). Never keys or URLs."""
+    scorer, attr = {
+        "judge": (judge, "last_error"),
+        "classifier": (classifier, "load_error"),
+    }.get(tier, (None, ""))
+    reason = getattr(scorer, attr, None) if scorer is not None else None
+    return reason if isinstance(reason, str) and reason else None
 
 
 def _output_roots(result: Any) -> list[tuple[str, Any]]:

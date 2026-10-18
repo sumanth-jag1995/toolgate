@@ -108,3 +108,33 @@ def test_frozen_rules_numbers():
     }
     assert result.output_injection == (5, 6)
     assert result.benign_fp == {"rules": 0} and result.benign_n == 50
+
+
+class _FailingJudge:
+    model = "fake/model"
+    last_error: str | None = None
+
+    def judge(self, tool, *, prior):
+        self.last_error = "HTTP 429"
+
+
+class _FailingClassifier:
+    load_error = "OSError"
+
+    def score(self, tool):
+        raise RuntimeError("model failed to load")
+
+
+def test_unavailable_header_names_the_cause():
+    result = run_bench(
+        split="dev",
+        tiers=("rules", "classifier", "judge"),
+        judge=_FailingJudge(),
+        classifier=_FailingClassifier(),
+    )
+    out = render(result, "text")
+    assert "unavailable: classifier (OSError), judge (HTTP 429)" in out
+    assert json.loads(render(result, "json"))["unavailable_reasons"] == {
+        "classifier": "OSError",
+        "judge": "HTTP 429",
+    }

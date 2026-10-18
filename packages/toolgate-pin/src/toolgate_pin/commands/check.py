@@ -87,7 +87,17 @@ def run(
         safe_print(f"toolgate-pin check: {exc}", file=err)
         return 2
 
-    if target is None:
+    if target is None and name is not None:
+        # --name without a target: just that pinned server, via its stored target.
+        sp = pins.get(name)
+        if sp is None:
+            safe_print(
+                f"toolgate-pin check: server {name} is not pinned in {lockfile}",
+                file=err,
+            )
+            return 2
+        jobs: list[tuple[str | None, Target]] = [(name, sp.target)]
+    elif target is None:
         if not pins.servers:
             safe_print(
                 f"toolgate-pin check: no servers pinned in {lockfile}; "

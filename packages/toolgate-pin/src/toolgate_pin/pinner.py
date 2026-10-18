@@ -61,11 +61,12 @@ def _safe_hash(tool: Any) -> tuple[str | None, str]:
         return None, f"{_UNCANONICALIZABLE} ({type(exc).__name__})"
 
 
-def _safe_diff(pinned: dict | None, tool: Any, error: str) -> str:
+def _safe_diff(pinned: dict | None, tool: Any, error: str = "") -> str:
+    """Diff pinned -> observed (``tool`` None: removed). Never raises."""
     if error:
         return error
     try:
-        return diff(pinned, as_definition(tool))
+        return diff(pinned, as_definition(tool) if tool is not None else None)
     except Exception as exc:  # noqa: BLE001
         return f"{_UNCANONICALIZABLE} for diff ({type(exc).__name__})"
 
@@ -185,7 +186,7 @@ class Pinner:
                             reason="removed",
                             observed_hash=None,
                             pinned_hash=pin.hash,
-                            diff=diff(pin.definition, None),
+                            diff=_safe_diff(pin.definition, None),
                         )
                     )
             span.set_attribute("toolgate.allowed_count", len(allowed))

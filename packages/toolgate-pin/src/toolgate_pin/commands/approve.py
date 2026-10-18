@@ -24,11 +24,12 @@ from toolgate_pin.connect import (
 from toolgate_pin.difftext import diff
 from toolgate_pin.models import InventoryTool, ScanReport, ServerPin, Target
 from toolgate_pin.pinning import duplicate_names, pin_server
-from toolgate_pin.reveal import ascii_brackets, decode_tag_text, safe_print
-from toolgate_pin.scanner import DEFAULT_CONFIG, scan_definition
+from toolgate_pin.reveal import ascii_brackets, decode_tag_text, one_line, safe_print
+from toolgate_pin.scanner import DEFAULT_CONFIG, scan_definition, unavailable_reason
 from toolgate_pin.store import LockfileError, LockfileStore
 
 _GIT_TIMEOUT = 5
+_MAX_REASON_CHARS = 300
 
 
 def git_user_name() -> str | None:
@@ -57,6 +58,22 @@ def malicious_tiers(report: ScanReport) -> list[str]:
     if report.judge is not None and report.judge.verdict == "malicious":
         tiers.append("judge")
     return tiers
+
+
+def tier_evidence(report: ScanReport) -> list[str]:
+    """Classifier score and judge verdict lines for one tool. Judge reasons and
+    the model name are untrusted text: sanitised and clipped to one line each."""
+    lines: list[str] = []
+    if report.classifier_score is not None:
+        lines.append(f"  classifier score: {report.classifier_score:.4f}")
+    if report.judge is not None:
+        model = one_line(report.judge.model, max_chars=100)
+        lines.append(f"  judge ({model}): {report.judge.verdict}")
+        lines.extend(
+            f"    - {one_line(r, max_chars=_MAX_REASON_CHARS)}"
+            for r in report.judge.reasons
+        )
+    return lines
 
 
 def _inventory(
@@ -151,7 +168,7 @@ def run(
     emit(f"{server_id} ({target_display(target)}): {len(tools)} tools")
     if prior is not None and prior.server_name != server_name:
         emit(f"! server name changed: {prior.server_name!r} -> {server_name!r}")
-    unavailable: set[str] = set()
+    unavailable: dict[str, str | None] = {}
     hashes: dict[str, str] = {}
     for tool in tools:
         try:
@@ -174,7 +191,10 @@ def run(
             classifier=classifier,
         )
         reports[tool.name] = report
-        unavailable.update(report.unavailable)
+        for tier in report.unavailable:
+            why = unavailable_reason(tier, judge=judge, classifier=classifier)
+            if unavailable.get(tier) is None:
+                unavailable[tier] = why
         kind = "changed" if old is not None else "new"
         emit(f"{'~' if old else '+'} {kind} tool {tool.name}: {report.verdict}")
         emit(diff(old.definition if old else None, as_definition(tool)))
@@ -184,20 +204,24 @@ def run(
         for f in report.findings:
             mark = " (already approved)" if f.preexisting else ""
             emit(f"  {f.rule_id} {f.severity} {f.field_path}: {f.message}{mark}")
+        for line in tier_evidence(report):
+            emit(line)
     current = {t.name for t in tools}
     removed = [n for n in (prior.tools if prior else {}) if n not in current]
     for tname in removed:
         emit(f"- removed tool {tname}")
         emit(diff(prior.tools[tname].definition, None))  # type: ignore[union-attr]
     for tier in sorted(unavailable):
-        emit(f"note: the {tier} tier is unavailable; it did not run")
+        why = f" ({unavailable[tier]})" if unavailable[tier] else ""
+        emit(f"note: the {tier} tier is unavailable{why}; it did not run")
 
     blocked = {
         n: malicious_tiers(r) for n, r in reports.items() if r.verdict == "malicious"
     }
     if blocked and override is None:
+        named = ", ".join(f"{n} ({', '.join(t)})" for n, t in blocked.items())
         return fail(
-            f"blocked: {', '.join(blocked)} judged malicious. Fix the server, or "
+            f"blocked: {named} judged malicious. Fix the server, or "
             'pass --override "<reason>" to approve anyway',
             3,
         )
