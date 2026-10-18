@@ -140,6 +140,92 @@ async def test_db_down_marks_unhealthy():
         await writer.stop()
 
 
+class FakePool:
+    """executemany fails while `down`, hangs while `hang`; records written rows."""
+
+    def __init__(self):
+        self.down = False
+        self.hang = False
+        self.rows = []
+
+    async def executemany(self, sql, rows, timeout=None):
+        if self.hang:
+            await asyncio.sleep(3600)
+        if self.down:
+            raise ConnectionError("down")
+        self.rows.extend(rows)
+
+    async def fetchval(self, sql, timeout=None):
+        if self.down or self.hang:
+            raise ConnectionError("down")
+        return 1
+
+
+async def _until(cond, secs=5.0):
+    for _ in range(int(secs / 0.01)):
+        if cond():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not met")
+
+
+async def test_writer_recovers_after_transient_failure():
+    pool = FakePool()
+    w = AuditWriter(pool, flush_interval_s=0.01, probe_min_s=0.05, probe_max_s=0.1)
+    await w.start()
+    pool.down = True
+    assert w.submit(_rec(1))
+    await _until(lambda: not w.healthy)
+    assert w.submit(_rec(2)) is False
+    pool.down = False
+    await _until(lambda: w.healthy)
+    assert w.submit(_rec(3)) is True
+    await w.stop()
+    assert any(r[2] == "core-read.t3" for r in pool.rows)
+
+
+async def test_queued_rows_survive_outage():
+    pool = FakePool()
+    w = AuditWriter(
+        pool, flush_interval_s=0.01, batch_size=2, probe_min_s=0.05, probe_max_s=0.1
+    )
+    pool.down = True
+    for i in range(6):
+        assert w.submit(_rec(i))
+    await w.start()
+    await _until(lambda: not w.healthy)
+    # First batch (2 rows) is dropped after its one retry; the rest stay queued.
+    assert w.dropped_count == 2
+    pool.down = False
+    await _until(lambda: w.healthy)
+    await w.stop()
+    assert len(pool.rows) == 4
+    assert w.dropped_count == 2
+
+
+async def test_hung_db_marks_unhealthy_and_stop_returns():
+    pool = FakePool()
+    pool.hang = True
+    w = AuditWriter(pool, flush_interval_s=0.01, op_timeout_s=0.1, probe_min_s=0.05)
+    await w.start()
+    assert w.submit(_rec(1))
+    await _until(lambda: not w.healthy, secs=3)
+    await asyncio.wait_for(w.stop(), 5)
+    assert w.submit(_rec(2)) is False
+
+
+async def test_submit_after_stop_returns_false():
+    w = AuditWriter(FakePool())
+    await w.start()
+    await w.stop()
+    assert w.submit(_rec(1)) is False
+
+
+async def test_migrate_rejects_empty_password(admin_dsn):
+    with pytest.raises(ValueError):
+        await migrate(admin_dsn, "")
+
+
 def test_args_hmac_stable_and_keyed():
     assert (
         args_hmac("k", {"b": 1, "a": 2})

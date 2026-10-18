@@ -40,6 +40,7 @@ BEGIN
 END
 $$;
 
+REVOKE ALL ON gateway.audit_log, gateway.pending_reviews FROM toolgate_gateway_app;
 GRANT USAGE ON SCHEMA gateway TO toolgate_gateway_app;
 GRANT INSERT ON gateway.audit_log TO toolgate_gateway_app;
 GRANT USAGE ON SEQUENCE gateway.audit_log_id_seq TO toolgate_gateway_app;

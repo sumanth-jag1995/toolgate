@@ -61,13 +61,21 @@ class AuditWriter:
         flush_interval_s: float = 0.1,
         batch_size: int = 50,
         max_queue: int = 10_000,
+        op_timeout_s: float = 2.0,
+        probe_min_s: float = 0.5,
+        probe_max_s: float = 5.0,
     ) -> None:
         self._pool = pool
         self._interval = flush_interval_s
         self._batch_size = batch_size
+        self._op_timeout = op_timeout_s
+        self._probe_min = probe_min_s
+        self._probe_max = probe_max_s
         self._queue: asyncio.Queue[AuditRecord] = asyncio.Queue(maxsize=max_queue)
         self._task: asyncio.Task[None] | None = None
-        self._stopping = False
+        self._wake = asyncio.Event()
+        self._stop_event = asyncio.Event()
+        self._closed = False
         self._healthy = True
         self.dropped_count = 0
 
@@ -77,22 +85,26 @@ class AuditWriter:
 
     async def start(self) -> None:
         if self._task is None:
-            self._stopping = False
+            self._closed = False
+            self._stop_event.clear()
             self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
-        self._stopping = True
+        self._closed = True
+        self._stop_event.set()
+        self._wake.set()
         if self._task is not None:
             await self._task
             self._task = None
 
     def submit(self, rec: AuditRecord) -> bool:
-        if not self._healthy:
+        if self._closed or not self._healthy:
             return False
         try:
             self._queue.put_nowait(rec)
         except asyncio.QueueFull:
             return False
+        self._wake.set()
         return True
 
     def _drain(self) -> list[AuditRecord]:
@@ -104,12 +116,18 @@ class AuditWriter:
                 break
         return batch
 
+    async def _write(self, rows: list[tuple[Any, ...]]) -> None:
+        await asyncio.wait_for(
+            self._pool.executemany(_INSERT, rows, timeout=self._op_timeout),
+            self._op_timeout + 0.5,
+        )
+
     async def _flush(self, batch: list[AuditRecord]) -> None:
         """Write a batch; one retry, then drop and count. Updates health."""
         rows = [astuple(r) for r in batch]
         for attempt in (1, 2):
             try:
-                await self._pool.executemany(_INSERT, rows)
+                await self._write(rows)
             except Exception as exc:  # noqa: BLE001 - any DB failure = unhealthy
                 self._healthy = False
                 log.warning("audit flush failed (attempt %d): %s", attempt, exc)
@@ -118,18 +136,44 @@ class AuditWriter:
                 return
         self.dropped_count += len(batch)
 
-    async def _run(self) -> None:
-        while True:
-            batch = self._drain()
-            if batch:
-                await self._flush(batch)
-                continue
-            if self._stopping:
+    async def _probe(self) -> bool:
+        try:
+            await asyncio.wait_for(
+                self._pool.fetchval("SELECT 1", timeout=self._op_timeout),
+                self._op_timeout + 0.5,
+            )
+        except Exception:  # noqa: BLE001 - any failure = still down
+            return False
+        return True
+
+    async def _recover(self) -> None:
+        """Probe with exponential backoff until the DB answers (or we stop)."""
+        delay = self._probe_min
+        while not self._healthy:
+            if await self._probe():
+                self._healthy = True
+                return
+            if self._stop_event.is_set():
                 return
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._wait_nonempty(), self._interval)
+                await asyncio.wait_for(self._stop_event.wait(), delay)
+            delay = min(delay * 2, self._probe_max)
 
-    async def _wait_nonempty(self) -> None:
-        # Wake early once a full batch is waiting; otherwise the timeout flushes.
-        while self._queue.qsize() < self._batch_size and not self._stopping:
-            await asyncio.sleep(0.005)
+    async def _run(self) -> None:
+        while True:
+            if not self._healthy:
+                # Rows stay queued while the DB is down; resume after recovery.
+                await self._recover()
+                if not self._healthy:  # stopping while still down
+                    self.dropped_count += self._queue.qsize()
+                    return
+            if self._queue.empty():
+                if self._stop_event.is_set():
+                    return
+                self._wake.clear()
+                if self._queue.empty():
+                    await self._wake.wait()
+                continue
+            if self._queue.qsize() < self._batch_size and not self._stop_event.is_set():
+                await asyncio.sleep(self._interval)
+            await self._flush(self._drain())

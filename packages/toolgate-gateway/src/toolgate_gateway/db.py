@@ -12,6 +12,8 @@ _MIGRATIONS = ("001_init.sql",)
 
 async def migrate(admin_dsn: str, app_password: str) -> None:
     """Apply idempotent migrations and set the app role's password."""
+    if not app_password:
+        raise ValueError("app_password must not be empty")
     conn = await asyncpg.connect(admin_dsn)
     try:
         for name in _MIGRATIONS:
@@ -29,4 +31,4 @@ async def migrate(admin_dsn: str, app_password: str) -> None:
 
 
 async def create_pool(dsn: str) -> asyncpg.Pool:
-    return await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+    return await asyncpg.create_pool(dsn, min_size=1, max_size=5, command_timeout=5.0)
