@@ -179,3 +179,10 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# Toolgate secrets guardrails
+infra/keycloak/generated/
+*.tfstate*
+.terraform/
+*.tfvars
+!*.tfvars.example
