@@ -1,6 +1,6 @@
 """End-to-end smoke test of sub-project A: 3 authenticated MCP servers over streamable HTTP.
 
-Run after `docker compose -f infra/docker-compose.yml up -d --build`. Reads the
+Run after `docker compose --env-file .env -f infra/docker-compose.yml up -d --build`. Reads the
 dev-tester client secret from the local .env (never printed). Exits non-zero on failure.
 """
 

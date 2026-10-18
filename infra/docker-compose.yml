@@ -1,15 +1,17 @@
 name: toolgate
 
+# Secrets are interpolated per service from ../.env (run compose with `--env-file ../.env`),
+# so each container only receives the secrets it needs.
+x-mcp-env: &mcp-env
+  MOCK_API_URL: http://mock-api:8000
+  TOKEN_URL: http://keycloak:8080/realms/toolgate/protocol/openid-connect/token
+  JWT_ISSUER: http://localhost:8080/realms/toolgate
+  JWKS_URL: http://keycloak:8080/realms/toolgate/protocol/openid-connect/certs
+
 x-mcp-server: &mcp-server
   build:
     context: ..
     dockerfile: services/mcp-servers/Dockerfile
-  env_file: ../.env
-  environment:
-    MOCK_API_URL: http://mock-api:8000
-    TOKEN_URL: http://keycloak:8080/realms/toolgate/protocol/openid-connect/token
-    JWT_ISSUER: http://localhost:8080/realms/toolgate
-    JWKS_URL: http://keycloak:8080/realms/toolgate/protocol/openid-connect/certs
   depends_on:
     mock-api:
       condition: service_healthy
@@ -19,9 +21,9 @@ x-mcp-server: &mcp-server
 services:
   postgres:
     image: postgres:16-alpine
-    env_file: ../.env
     environment:
       POSTGRES_DB: toolgate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/gen_dev_env.py}
     ports:
       - "5432:5432"
     healthcheck:
@@ -33,18 +35,12 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     command: ["start-dev", "--import-realm"]
-    env_file: ../.env
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?run scripts/gen_dev_env.py}
       KC_HEALTH_ENABLED: "true"
       KC_HOSTNAME: http://localhost:8080
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
-    # KC_BOOTSTRAP_ADMIN_PASSWORD is set from KEYCLOAK_ADMIN_PASSWORD below
-    entrypoint:
-      - /bin/sh
-      - -c
-      - export KC_BOOTSTRAP_ADMIN_PASSWORD="$$KEYCLOAK_ADMIN_PASSWORD"; exec /opt/keycloak/bin/kc.sh "$$@"
-      - kc
     volumes:
       - ./keycloak/generated:/opt/keycloak/data/import:ro
     ports:
@@ -66,17 +62,14 @@ services:
     build:
       context: ..
       dockerfile: services/mock-enterprise/Dockerfile
-    env_file: ../.env
     environment:
       JWT_ISSUER: http://localhost:8080/realms/toolgate
       JWKS_URL: http://keycloak:8080/realms/toolgate/protocol/openid-connect/certs
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/toolgate
     command:
       - /bin/sh
       - -c
-      - >-
-        export DATABASE_URL="postgresql+asyncpg://postgres:$$POSTGRES_PASSWORD@postgres:5432/toolgate" &&
-        python -m mock_enterprise.seed --reset &&
-        exec python -m mock_enterprise.app
+      - python -m mock_enterprise.seed --reset && exec python -m mock_enterprise.app
     ports:
       - "8000:8000"
     depends_on:
@@ -96,27 +89,30 @@ services:
 
   core-read:
     <<: *mcp-server
-    command:
-      - /bin/sh
-      - -c
-      - export CLIENT_ID=core-read CLIENT_SECRET="$$CORE_READ_CLIENT_SECRET"; exec python -m toolgate_mcp_servers.core_read
+    environment:
+      <<: *mcp-env
+      CLIENT_ID: core-read
+      CLIENT_SECRET: ${CORE_READ_CLIENT_SECRET:?run scripts/gen_dev_env.py}
+    command: ["python", "-m", "toolgate_mcp_servers.core_read"]
     ports:
       - "127.0.0.1:8101:8101"
 
   core-write:
     <<: *mcp-server
-    command:
-      - /bin/sh
-      - -c
-      - export CLIENT_ID=core-write CLIENT_SECRET="$$CORE_WRITE_CLIENT_SECRET"; exec python -m toolgate_mcp_servers.core_write
+    environment:
+      <<: *mcp-env
+      CLIENT_ID: core-write
+      CLIENT_SECRET: ${CORE_WRITE_CLIENT_SECRET:?run scripts/gen_dev_env.py}
+    command: ["python", "-m", "toolgate_mcp_servers.core_write"]
     ports:
       - "127.0.0.1:8102:8102"
 
   comms:
     <<: *mcp-server
-    command:
-      - /bin/sh
-      - -c
-      - export CLIENT_ID=comms CLIENT_SECRET="$$COMMS_CLIENT_SECRET"; exec python -m toolgate_mcp_servers.comms
+    environment:
+      <<: *mcp-env
+      CLIENT_ID: comms
+      CLIENT_SECRET: ${COMMS_CLIENT_SECRET:?run scripts/gen_dev_env.py}
+    command: ["python", "-m", "toolgate_mcp_servers.comms"]
     ports:
       - "127.0.0.1:8103:8103"
