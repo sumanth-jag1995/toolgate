@@ -21,6 +21,9 @@ class ScanConfig:
 
 # Documentation and code hosts that legitimate tool descriptions link to.
 # Starting values; Task 9 tunes them on the dev split only, then freezes them.
+# Entries match as dot-suffixes, so NEVER seed multi-tenant user-content
+# suffixes (readthedocs.io, github.io, gitlab.io, netlify.app, vercel.app,
+# pages.dev, herokuapp.com, ...): anyone can register a subdomain there.
 DEFAULT_URL_ALLOWLIST: tuple[str, ...] = (
     "github.com",
     "gitlab.com",
@@ -32,7 +35,6 @@ DEFAULT_URL_ALLOWLIST: tuple[str, ...] = (
     "python.org",
     "pypi.org",
     "npmjs.com",
-    "readthedocs.io",
     "mozilla.org",
     "wikipedia.org",
 )

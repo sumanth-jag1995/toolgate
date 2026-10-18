@@ -51,8 +51,31 @@ def decide_verdict(
     return "benign"
 
 
-def _finding_key(f: Finding) -> tuple[str, str, str]:
-    return (f.rule_id, f.field_path, f.evidence)
+def _rules_tier(
+    definition: dict[str, Any],
+    prior: dict[str, Any] | None,
+    server_id: str,
+    inventory: tuple[InventoryTool, ...],
+    config: ScanConfig,
+) -> tuple[Finding, ...]:
+    """Rules findings; preexisting when every occurrence, with its surrounding
+    context, also occurs in the prior and no match was cut off by the budget."""
+    matches = rules.definition_matches(
+        definition, server_id=server_id, inventory=inventory, config=config
+    )
+    if prior is None:
+        return tuple(m.finding for m in matches)
+    before: set[rules.MatchKey] = set()
+    for m in rules.definition_matches(
+        prior, server_id=server_id, inventory=inventory, config=config
+    ):
+        before |= m.keys
+    return tuple(
+        replace(m.finding, preexisting=True)
+        if m.complete and m.keys <= before
+        else m.finding
+        for m in matches
+    )
 
 
 def scan_definition(
@@ -86,20 +109,7 @@ def scan_definition(
         unavailable: list[str] = []
         for tier in dict.fromkeys(tiers):
             if tier == "rules":
-                findings = rules.definition_findings(
-                    definition, server_id=server_id, inventory=inv, config=config
-                )
-                if prior_def is not None:
-                    before = {
-                        _finding_key(f)
-                        for f in rules.definition_findings(
-                            prior_def, server_id=server_id, inventory=inv, config=config
-                        )
-                    }
-                    findings = tuple(
-                        replace(f, preexisting=True) if _finding_key(f) in before else f
-                        for f in findings
-                    )
+                findings = _rules_tier(definition, prior_def, server_id, inv, config)
                 tiers_run.append(tier)
             elif tier == "classifier":
                 score = _run_classifier(classifier, definition)

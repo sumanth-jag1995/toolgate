@@ -79,9 +79,12 @@ MAX_EVIDENCE = 80  # chars of matched excerpt, before reveal()
 MAX_FINDINGS_PER_RULE_FIELD = 5
 # Matches (duplicates included) after which a rule stops scanning a field.
 MAX_MATCHES_PER_RULE_FIELD = 50
+# Characters of surrounding text in a finding's preexisting-match key, so new
+# text around an old token (".env") is not mistaken for the old finding.
+CONTEXT_CHARS = 20
 
-# Values under these schema keys are identifiers, not prose: only the hidden
-# Unicode rules see them.
+# Values under these schema keys are identifiers, not prose: they (like keys and
+# the tool name) skip only the URL/email and blob rules.
 STRUCTURAL_KEYS = frozenset(
     {
         "type",
@@ -328,13 +331,25 @@ def _walk(root: Any, base: str) -> Iterator[tuple[str, str, str | None, bool]]:
             )
 
 
+def _window(text: str, start: int, end: int) -> str:
+    """The match plus CONTEXT_CHARS on each side: the preexisting-match key."""
+    return text[max(0, start - CONTEXT_CHARS) : end + CONTEXT_CHARS]
+
+
+MatchKey = tuple[str, str, str]  # (rule_id, field_path, match in context)
+
+
 class _Collector:
     def __init__(self, rules: frozenset[str]) -> None:
         self.rules = rules
         self.findings: list[Finding] = []
-        self._seen: set[tuple[str, str, str]] = set()
+        # Every occurrence's match key, per finding (same order as findings).
+        self.keys: list[set[MatchKey]] = []
+        self._index: dict[tuple[str, str, str], int] = {}
         self._count: dict[tuple[str, str], int] = {}
         self._attempts: dict[tuple[str, str], int] = {}
+        # (rule_id, field_path) pairs that had matches beyond the budget.
+        self.overflow: set[tuple[str, str]] = set()
 
     def full(self, rule_id: str, ptr: str) -> bool:
         key = (rule_id, ptr)
@@ -343,15 +358,31 @@ class _Collector:
             or self._attempts.get(key, 0) >= MAX_MATCHES_PER_RULE_FIELD
         )
 
-    def add(self, rule_id: str, ptr: str, excerpt: str, detail: str = "") -> bool:
-        """Record a finding; return False once the rule is full for this field."""
-        if rule_id not in self.rules or self.full(rule_id, ptr):
+    def add(
+        self,
+        rule_id: str,
+        ptr: str,
+        excerpt: str,
+        detail: str = "",
+        context: str | None = None,
+    ) -> bool:
+        """Record a finding; return False once the rule is full for this field.
+
+        `context` is the match with surrounding text (see _window); it defaults
+        to the excerpt for rules that have no surrounding text.
+        """
+        if rule_id not in self.rules:
+            return False
+        if self.full(rule_id, ptr):
+            self.overflow.add((rule_id, ptr))
             return False
         key = (rule_id, ptr)
         self._attempts[key] = self._attempts.get(key, 0) + 1
         evidence = reveal(excerpt[:MAX_EVIDENCE])
-        if (rule_id, ptr, evidence) not in self._seen:
-            self._seen.add((rule_id, ptr, evidence))
+        match_key = (rule_id, ptr, excerpt if context is None else context)
+        at = self._index.get((rule_id, ptr, evidence))
+        if at is None:
+            self._index[(rule_id, ptr, evidence)] = len(self.findings)
             self._count[key] = self._count.get(key, 0) + 1
             message = MESSAGE[rule_id]
             if detail:
@@ -359,7 +390,15 @@ class _Collector:
             self.findings.append(
                 Finding(rule_id, SEVERITY[rule_id], ptr, evidence, message)  # type: ignore[arg-type]
             )
-        return not self.full(rule_id, ptr)
+            self.keys.append({match_key})
+        else:
+            self.keys[at].add(match_key)
+        return True
+
+    def complete(self, index: int) -> bool:
+        """False when the field had matches beyond the budget for this rule."""
+        f = self.findings[index]
+        return (f.rule_id, f.field_path) not in self.overflow
 
 
 @dataclass(frozen=True)
@@ -437,6 +476,24 @@ def _hidden_rule(ch: str, prev: str, nxt: str, rtl: bool) -> str | None:
     return "TG-UNI-003"
 
 
+def _still_open(
+    text: str,
+    pos: int,
+    open_rules: frozenset[str],
+    rtl: bool,
+    ptr: str,
+    col: _Collector,
+) -> frozenset[str]:
+    """Drop full rules; a dropped rule with more candidates later overflowed."""
+    still: set[str] = set()
+    for rule in open_rules:
+        if not col.full(rule, ptr):
+            still.add(rule)
+        elif _rule_class_re(rule, rtl).search(text, pos) is not None:
+            col.overflow.add((rule, ptr))
+    return frozenset(still)
+
+
 def _hidden(text: str, ptr: str, col: _Collector) -> None:
     if text.isascii():
         return
@@ -453,8 +510,10 @@ def _hidden(text: str, ptr: str, col: _Collector) -> None:
             prev = text[start - 1] if start > 0 else ""
             nxt = text[pos] if pos < len(text) else ""
             rule = _hidden_rule(run, prev, nxt, rtl)
-            if rule is not None and not col.add(rule, ptr, run):
-                open_rules = frozenset(r for r in open_rules if not col.full(r, ptr))
+            if rule is not None and not col.add(
+                rule, ptr, run, "", _window(text, start, pos)
+            ):
+                open_rules = _still_open(text, pos, open_rules, rtl, ptr, col)
             continue
         if len(run) > _LONG_RUN:
             for rule in _HIDDEN_RULES:
@@ -464,8 +523,9 @@ def _hidden(text: str, ptr: str, col: _Collector) -> None:
                     else None
                 )
                 if hit is not None:
-                    col.add(rule, ptr, hit.group())
-            open_rules = frozenset(r for r in open_rules if not col.full(r, ptr))
+                    at = start + hit.start()
+                    col.add(rule, ptr, hit.group(), "", _window(text, at, at + 1))
+            open_rules = _still_open(text, pos, open_rules, rtl, ptr, col)
             continue
         # Segments of (rule, length); identical neighbours are classified once,
         # so a 100 KB run costs one C-level pass.
@@ -484,9 +544,16 @@ def _hidden(text: str, ptr: str, col: _Collector) -> None:
         for rule, seg in groupby(segments, key=lambda x: x[0]):
             length = sum(n for _, n in seg)
             if rule is not None:
-                col.add(rule, ptr, run[cursor : cursor + length])
+                at = start + cursor
+                col.add(
+                    rule,
+                    ptr,
+                    run[cursor : cursor + length],
+                    "",
+                    _window(text, at, at + length),
+                )
             cursor += length
-        open_rules = frozenset(r for r in open_rules if not col.full(r, ptr))
+        open_rules = _still_open(text, pos, open_rules, rtl, ptr, col)
 
 
 # =============================================================================
@@ -500,7 +567,7 @@ def _regex_rule(
     if rule_id not in col.rules:
         return
     for m in rx.finditer(text):
-        if not col.add(rule_id, ptr, m.group()):
+        if not col.add(rule_id, ptr, m.group(), "", _window(text, *m.span())):
             return
 
 
@@ -534,12 +601,15 @@ def _xref_mentions(text: str, ptr: str, ctx: _Ctx, col: _Collector) -> None:
             text, m.start(), m.end()
         ):
             continue
+        context = _window(text, m.start(), m.end())
         if name in ctx.siblings:
-            col.add("TG-XREF-003", ptr, name, f"{name} (same server)")
+            col.add("TG-XREF-003", ptr, name, f"{name} (same server)", context)
         else:
             servers = ", ".join(ctx.others.get(name, ()))
-            col.add("TG-XREF-001", ptr, name, f"{name} on server {servers}")
-        if col.full("TG-XREF-001", ptr) and col.full("TG-XREF-003", ptr):
+            col.add("TG-XREF-001", ptr, name, f"{name} on server {servers}", context)
+        if (
+            ("TG-XREF-001", ptr) in col.overflow or "TG-XREF-001" not in col.rules
+        ) and (("TG-XREF-003", ptr) in col.overflow or "TG-XREF-003" not in col.rules):
             return
 
 
@@ -574,7 +644,13 @@ def _redirects(text: str, ptr: str, ctx: _Ctx, col: _Collector) -> None:
         elif target is None or target == ctx.own_name or target in ctx.siblings:
             # "before calling X" / "instead of X" need X to be another tool.
             continue
-        if not col.add("TG-XREF-002", ptr, m.group().strip(), target or ""):
+        if not col.add(
+            "TG-XREF-002",
+            ptr,
+            m.group().strip(),
+            target or "",
+            _window(text, *m.span()),
+        ):
             return
 
 
@@ -582,31 +658,57 @@ def _allowed(host: str, allow: tuple[str, ...]) -> bool:
     return any(host == e or host.endswith("." + e) for e in allow)
 
 
-def _url_host(url: str) -> str:
-    rest = url.split("://", 1)[1]
-    auth = re.split(r"[/?#\\]", rest, maxsplit=1)[0].rsplit("@", 1)[-1]
+def _authority_host(authority: str) -> str:
+    auth = authority.rsplit("@", 1)[-1]
     host = auth[1:].split("]", 1)[0] if auth.startswith("[") else auth.split(":", 1)[0]
     return host.rstrip(".,;:!?)]}").lower()
+
+
+def _url_host(url: str, allow: tuple[str, ...]) -> tuple[str, bool]:
+    """Return (host, allowed).
+
+    Allowed only when the RFC 3986 reading and the WHATWG reading (which also
+    ends the authority at a backslash) give allowlisted hosts and the authority
+    is unambiguous: no backslash and at most one "@". This defeats
+    "github.com, backslash, @attacker.example" style host confusion.
+    """
+    rest = url.split("://", 1)[1]
+    rfc_authority = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    whatwg_authority = re.split(r"[/?#\\]", rest, maxsplit=1)[0]
+    rfc_host = _authority_host(rfc_authority)
+    whatwg_host = _authority_host(whatwg_authority)
+    allowed = (
+        "\\" not in rfc_authority
+        and rfc_authority.count("@") <= 1
+        and _allowed(rfc_host, allow)
+        and _allowed(whatwg_host, allow)
+    )
+    return rfc_host, allowed
 
 
 def _urls(text: str, ptr: str, ctx: _Ctx, col: _Collector) -> None:
     if "TG-EXF-001" not in col.rules:
         return
-    spans: list[tuple[int, int]] = []
+    spans: list[tuple[int, int]] = []  # increasing, non-overlapping
     if "://" in text:
         for m in _URL_RE.finditer(text):
             spans.append(m.span())
             url = m.group().rstrip(".,;:!?)]}")
-            host = _url_host(url)
-            if not _allowed(host, ctx.allowlist) and not col.add(
-                "TG-EXF-001", ptr, url, host
+            host, allowed = _url_host(url, ctx.allowlist)
+            if not allowed and not col.add(
+                "TG-EXF-001", ptr, url, host, _window(text, *m.span())
             ):
                 return
     if "@" not in text:
         return
+    span_i = 0
     for m in _EMAIL_RE.finditer(text):
         pos = m.start()
-        if any(s <= pos < e for s, e in spans):
+        # Emails come in increasing order, so one forward pointer keeps the
+        # "inside a URL" check linear.
+        while span_i < len(spans) and spans[span_i][1] <= pos:
+            span_i += 1
+        if span_i < len(spans) and spans[span_i][0] <= pos:
             continue
         host = m.group(1).rstrip(".-").lower()
         tld = host.rsplit(".", 1)[-1]
@@ -619,7 +721,13 @@ def _urls(text: str, ptr: str, ctx: _Ctx, col: _Collector) -> None:
             text[local_start - 1].isalnum() or text[local_start - 1] in "._+-"
         ):
             local_start -= 1
-        if not col.add("TG-EXF-001", ptr, text[local_start:pos] + "@" + host, host):
+        if not col.add(
+            "TG-EXF-001",
+            ptr,
+            text[local_start:pos] + "@" + host,
+            host,
+            _window(text, local_start, m.end()),
+        ):
             return
 
 
@@ -641,18 +749,31 @@ def _blobs(text: str, ptr: str, col: _Collector) -> None:
             kind = "base64"
         else:
             continue
-        if not col.add("TG-EXF-003", ptr, run, f"{kind}, {len(run)} chars"):
+        if not col.add(
+            "TG-EXF-003",
+            ptr,
+            run,
+            f"{kind}, {len(run)} chars",
+            _window(text, *m.span()),
+        ):
             return
 
 
-def _text_rules(text: str, ptr: str, ctx: _Ctx, col: _Collector) -> None:
+def _text_rules(
+    text: str, ptr: str, ctx: _Ctx, col: _Collector, *, identifier: bool = False
+) -> None:
+    """`identifier`: keys, the tool name and STRUCTURAL_KEYS values. They get
+    every text rule except URL/email (TG-EXF-001) and blob (TG-EXF-003) checks,
+    whose false positives ($schema/$id URIs, hashes) live there."""
     _regex_rule(_INS_RE, "TG-INS-001", text, ptr, col)
     _regex_rule(_SOFT_RE, "TG-INS-002", text, ptr, col)
     _xref_mentions(text, ptr, ctx, col)
     _redirects(text, ptr, ctx, col)
-    _urls(text, ptr, ctx, col)
+    if not identifier:
+        _urls(text, ptr, ctx, col)
     _regex_rule(_PATH_RE, "TG-EXF-002", text, ptr, col)
-    _blobs(text, ptr, col)
+    if not identifier:
+        _blobs(text, ptr, col)
 
 
 # =============================================================================
@@ -786,6 +907,15 @@ def _shadowing(own: str, ctx: _Ctx, col: _Collector) -> None:
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class RuleMatch:
+    """A finding plus what preexisting-matching needs."""
+
+    finding: Finding
+    keys: frozenset[MatchKey]  # every occurrence, with surrounding context
+    complete: bool  # False if the field had more matches than the budget
+
+
 def definition_findings(
     definition: Mapping[str, Any],
     *,
@@ -793,15 +923,29 @@ def definition_findings(
     inventory: Iterable[InventoryTool],
     config: ScanConfig,
 ) -> tuple[Finding, ...]:
+    return tuple(
+        m.finding
+        for m in definition_matches(
+            definition, server_id=server_id, inventory=inventory, config=config
+        )
+    )
+
+
+def definition_matches(
+    definition: Mapping[str, Any],
+    *,
+    server_id: str,
+    inventory: Iterable[InventoryTool],
+    config: ScanConfig,
+) -> tuple[RuleMatch, ...]:
     raw_name = definition.get("name")
     own = raw_name if isinstance(raw_name, str) else ""
     ctx = _context(server_id, own, inventory, config)
     col = _Collector(DEFINITION_RULES)
     for ptr, text, pkey, is_key in _walk(definition, ""):
         _hidden(text, ptr, col)
-        if is_key or ptr == "/name" or pkey in STRUCTURAL_KEYS:
-            continue
-        _text_rules(text, ptr, ctx, col)
+        identifier = is_key or ptr == "/name" or pkey in STRUCTURAL_KEYS
+        _text_rules(text, ptr, ctx, col, identifier=identifier)
     if own:
         _mixed_script(own, "/name", col)
     schema = definition.get("inputSchema")
@@ -809,7 +953,10 @@ def definition_findings(
         _mixed_script(pname, ptr, col)
         _side_channel(pname, sub, ptr, col)
     _shadowing(own, ctx, col)
-    return tuple(col.findings)
+    return tuple(
+        RuleMatch(f, frozenset(col.keys[i]), col.complete(i))
+        for i, f in enumerate(col.findings)
+    )
 
 
 def output_findings(
@@ -824,6 +971,5 @@ def output_findings(
     for base, node in roots:
         for ptr, text, _pkey, is_key in _walk(node, base):
             _hidden(text, ptr, col)
-            if not is_key:
-                _text_rules(text, ptr, ctx, col)
+            _text_rules(text, ptr, ctx, col, identifier=is_key)
     return tuple(col.findings)
