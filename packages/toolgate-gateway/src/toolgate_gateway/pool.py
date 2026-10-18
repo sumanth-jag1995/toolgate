@@ -173,6 +173,11 @@ class DownstreamPool:
         self._closed = False
         self.on_list_changed: Callable[[str], Awaitable[None]] | None = None
 
+    @property
+    def server_ids(self) -> list[str]:
+        """Configured server ids, in configuration order."""
+        return list(self._configs)
+
     # -- lifecycle ---------------------------------------------------------
 
     async def start(self) -> None:

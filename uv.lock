@@ -1677,6 +1677,7 @@ source = { editable = "packages/toolgate-gateway" }
 dependencies = [
     { name = "asyncpg" },
     { name = "httpx" },
+    { name = "jsonschema" },
     { name = "mcp" },
     { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
@@ -1689,6 +1690,7 @@ dependencies = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.32.0" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "jsonschema", specifier = ">=4.20" },
     { name = "mcp", specifier = ">=1.30,<2" },
     { name = "pydantic-settings", specifier = ">=2.4" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },

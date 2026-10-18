@@ -12,6 +12,7 @@ dependencies = [
     "mcp>=1.30,<2",
     "asyncpg>=0.32.0",
     "rfc8785>=0.1.4",
+    "jsonschema>=4.20",
 ]
 
 [project.scripts]
