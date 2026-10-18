@@ -408,3 +408,107 @@ def test_module_entry_point_runs_demo_server():
     )
     assert proc.returncode == 0
     assert "approve" in proc.stdout and "check" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("mutate", "secrets"),
+    [
+        (lambda u: u.replace("//", "//usr:pwsecret@"), ("pwsecret", "usr:")),
+        (lambda u: u + "?key=qsecret", ("qsecret",)),
+        (
+            lambda u: u.replace("//", "//usr:pwsecret@") + "?key=qsecret",
+            ("pwsecret", "qsecret"),
+        ),
+        (lambda u: u + "?key=${TG_TOKEN}", ()),
+    ],
+)
+def test_url_secrets_refused(tmp_path, capsys, monkeypatch, http_demo, mutate, secrets):
+    # A live, reachable server: refusal must come from validation, not a failed
+    # connection, and no request may be made at all.
+    url, seen = http_demo
+    monkeypatch.setenv("TG_TOKEN", SECRET)
+    lock = tmp_path / "toolgate.lock.json"
+    code, out = _run(
+        capsys,
+        "approve",
+        mutate(url),
+        "--header",
+        "Authorization: Bearer ${TG_TOKEN}",
+        "--lockfile",
+        str(lock),
+        "--yes",
+        "--as",
+        "tester",
+    )
+    assert code == 2
+    assert "refused" in out or "credentials" in out
+    assert not lock.exists()
+    assert seen == []
+    for s in (*secrets, SECRET):
+        assert s not in out
+
+
+def test_check_explicit_url_with_credentials_refused(tmp_path, capsys):
+    lock = tmp_path / "toolgate.lock.json"
+    _http_lock(lock, "http://127.0.0.1:9/mcp")
+    code, out = _run(
+        capsys,
+        "check",
+        "http://usr:pwsecret@127.0.0.1:9/mcp",
+        "--lockfile",
+        str(lock),
+    )
+    assert code == 2
+    assert "pwsecret" not in out
+
+
+def _approve_http(capsys, lock, url) -> None:
+    code, out = _run(
+        capsys,
+        "approve",
+        url,
+        "--header",
+        "Authorization: Bearer ${TG_TOKEN}",
+        "--lockfile",
+        str(lock),
+        "--yes",
+        "--as",
+        "tester",
+    )
+    assert code == 0, out
+
+
+def test_named_check_reuses_headers_same_origin(
+    tmp_path, capsys, monkeypatch, http_demo
+):
+    url, seen = http_demo
+    monkeypatch.setenv("TG_TOKEN", SECRET)
+    lock = tmp_path / "toolgate.lock.json"
+    _approve_http(capsys, lock, url)
+    seen.clear()
+    code, out = _run(
+        capsys, "check", url, "--name", "insurer-demo", "--lockfile", str(lock)
+    )
+    assert code == 0, out
+    assert seen and all(a == f"Bearer {SECRET}" for a in seen)
+    assert SECRET not in out
+
+
+def test_named_check_refuses_cross_origin_headers(
+    tmp_path, capsys, monkeypatch, http_demo
+):
+    url, seen = http_demo
+    monkeypatch.setenv("TG_TOKEN", SECRET)
+    lock = tmp_path / "toolgate.lock.json"
+    _approve_http(capsys, lock, url)
+    seen.clear()
+    # Same server, different origin (host spelled differently): must not get the token.
+    other = url.replace("127.0.0.1", "localhost")
+    code, out = _run(
+        capsys, "check", other, "--name", "insurer-demo", "--lockfile", str(lock)
+    )
+    assert code == 2
+    assert "origin" in out
+    assert SECRET not in out
+    assert all(SECRET not in a for a in seen)
+    assert seen == []

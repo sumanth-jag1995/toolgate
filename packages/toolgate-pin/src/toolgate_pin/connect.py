@@ -68,13 +68,59 @@ def expand_headers(templates: Sequence[str], env: Mapping[str, str]) -> dict[str
     return headers
 
 
+def validate_url(url: str) -> None:
+    """Refuse a server URL that would put a secret into the lockfile.
+
+    User info (``user:password@``) and query strings are refused outright; put
+    credentials in a ``--header`` template instead. Messages never echo the URL.
+    """
+    try:
+        parts = urlsplit(url)
+        parts.port  # noqa: B018  raises ValueError on a malformed port
+    except ValueError:
+        raise UsageError("the server URL is malformed") from None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise UsageError("a server URL must be http(s)://host[:port]/path")
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        raise UsageError(
+            "the server URL contains credentials (user:password@); they would be "
+            "written to the lockfile. Use --header with an ${ENV_VAR} instead"
+        )
+    if parts.query or "?" in url:
+        raise UsageError(
+            "the server URL has a query string, which would be written to the "
+            "lockfile; query strings are refused. Use --header with an ${ENV_VAR} "
+            "for credentials"
+        )
+    if parts.fragment:
+        raise UsageError("the server URL must not have a #fragment")
+
+
+def _origin(url: str) -> tuple[str, str, int]:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    port = parts.port or (443 if scheme == "https" else 80)
+    return scheme, (parts.hostname or "").lower(), port
+
+
+def same_origin(a: str, b: str) -> bool:
+    """True when both URLs share scheme, host and (default-normalised) port."""
+    try:
+        return _origin(a) == _origin(b)
+    except ValueError:
+        return False
+
+
 def target_display(target: Target) -> str:
     """Human-readable target without headers, credentials or query strings."""
     if target.url is not None:
-        parts = urlsplit(target.url)
-        host = parts.hostname or ""
-        if parts.port is not None:
-            host = f"{host}:{parts.port}"
+        try:
+            parts = urlsplit(target.url)
+            host = parts.hostname or ""
+            if parts.port is not None:
+                host = f"{host}:{parts.port}"
+        except ValueError:
+            return "<malformed url>"
         return f"{parts.scheme}://{host}{parts.path}"
     if target.command:
         return shlex.join(target.command)
@@ -93,8 +139,7 @@ async def open_session(
     """
     display = target_display(target)
     if target.url is not None:
-        if urlsplit(target.url).scheme not in ("http", "https"):
-            raise UsageError("a server URL must start with http:// or https://")
+        validate_url(target.url)
         headers = expand_headers(target.headers, env)
     elif target.command:
         if target.headers:

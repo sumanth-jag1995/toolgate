@@ -19,6 +19,7 @@ from toolgate_pin.connect import (
     fetch_tools,
     target_display,
     validate_header_template,
+    validate_url,
 )
 from toolgate_pin.difftext import diff
 from toolgate_pin.models import InventoryTool, ScanReport, ServerPin, Target
@@ -98,6 +99,8 @@ def run(
         return code
 
     try:
+        if target.url is not None:
+            validate_url(target.url)
         for h in target.headers:
             validate_header_template(h)
     except UsageError as exc:

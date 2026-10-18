@@ -15,6 +15,7 @@ from toolgate_pin.connect import (
     UsageError,
     describe_error,
     fetch_tools,
+    same_origin,
     target_display,
 )
 from toolgate_pin.models import PinSet, Quarantine, Target
@@ -30,7 +31,9 @@ from toolgate_pin.store import InMemoryStore, LockfileError, LockfileStore
 
 def _with_stored_headers(target: Target, name: str | None, pins: PinSet) -> Target:
     """An explicit URL target authenticates with the header templates pinned for
-    the same server (by --name, else by an identical stored URL)."""
+    the same server (by --name, else by an identical stored URL), but only on
+    the pinned origin. Raises UsageError rather than send a server's
+    credentials to a different scheme, host or port."""
     if target.url is None or target.headers:
         return target
     sp = pins.get(name) if name else None
@@ -38,8 +41,13 @@ def _with_stored_headers(target: Target, name: str | None, pins: PinSet) -> Targ
         sp = next(
             (s for s in pins.servers.values() if s.target.url == target.url), None
         )
-    if sp is None or sp.target.url is None:
+    if sp is None or not sp.target.headers:
         return target
+    if sp.target.url is None or not same_origin(sp.target.url, target.url):
+        raise UsageError(
+            f"--name {sp.server_id} does not carry its pinned credentials to a "
+            "different origin (scheme, host and port must match the pinned URL)"
+        )
     return replace(target, headers=sp.target.headers)
 
 
@@ -91,7 +99,11 @@ def run(
             (sid, sp.target) for sid, sp in pins.servers.items()
         ]
     else:
-        jobs = [(name, _with_stored_headers(target, name, pins))]
+        try:
+            jobs = [(name, _with_stored_headers(target, name, pins))]
+        except UsageError as exc:
+            safe_print(f"toolgate-pin check: {exc}", file=err)
+            return 2
 
     pinner = Pinner(InMemoryStore(pins))
     code = 0
