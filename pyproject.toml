@@ -24,5 +24,5 @@ members = ["services/*", "packages/*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
-testpaths = ["tests", "services/mock-enterprise/tests", "services/mcp-servers/tests"]
+testpaths = ["tests", "services/mock-enterprise/tests", "services/mcp-servers/tests", "packages/toolgate-pin/tests"]
 addopts = "--import-mode=importlib"
