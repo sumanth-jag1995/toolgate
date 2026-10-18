@@ -4,7 +4,7 @@
   "server_id": "playwright",
   "definition": {
     "name": "browser_navigate_back",
-    "description": "Va a la page precedente dans l'historique",
+    "description": "Revient à la page précédente de l'historique.",
     "inputSchema": {
       "type": "object",
       "properties": {}

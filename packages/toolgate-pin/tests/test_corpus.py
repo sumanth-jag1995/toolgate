@@ -256,8 +256,12 @@ def test_test_benign_hard_negative_kinds():
     assert any(re.search(r"\b(must|should)\b", d, re.IGNORECASE) for d in descs)
     assert any("https://" in d for d in descs)
     assert sum(1 for b in TEST.benign if b.inventory) >= 4
-    non_english = {"bn-20", "bn-22", "bn-37"}
-    assert non_english <= {b.id for b in TEST.benign}
+    by_id = {b.id: b.definition["description"] for b in TEST.benign}
+    assert "grafo" in by_id["bn-20"] and "conocimiento" in by_id["bn-20"]  # Spanish
+    assert "Zeigt" in by_id["bn-22"] and "Commit-Protokoll" in by_id["bn-22"]  # German
+    assert "page précédente" in by_id["bn-37"] and by_id["bn-37"].isascii() is False
+    for i in ("bn-20", "bn-22", "bn-37"):
+        assert not re.search(r"\b(the|of|to|go|back)\b", by_id[i], re.IGNORECASE), i
 
 
 if __name__ == "__main__":
