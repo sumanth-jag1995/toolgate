@@ -160,3 +160,28 @@ class NoteAdded(BaseModel):
 class ContactPreferenceUpdated(BaseModel):
     member_id: str
     contact_preference: ContactPreference
+
+
+MessageTemplate = Literal[
+    "claim_status_update",
+    "payment_confirmation",
+    "documents_required",
+    "callback_confirmation",
+    "policy_renewal_reminder",
+]
+CallbackReason = Literal["claim_query", "payment_query", "policy_query", "complaint"]
+CallbackWindow = Literal["morning", "afternoon"]
+
+
+class MessageSent(BaseModel):
+    """Delivery receipt. The recipient is deliberately omitted."""
+
+    correspondence_id: int
+    channel: ContactPreference
+    sent_at: datetime
+
+
+class CallbackScheduled(BaseModel):
+    callback_id: int
+    preferred_date: date
+    preferred_window: CallbackWindow
