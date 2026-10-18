@@ -1,5 +1,21 @@
 name: toolgate
 
+x-mcp-server: &mcp-server
+  build:
+    context: ..
+    dockerfile: services/mcp-servers/Dockerfile
+  env_file: ../.env
+  environment:
+    MOCK_API_URL: http://mock-api:8000
+    TOKEN_URL: http://keycloak:8080/realms/toolgate/protocol/openid-connect/token
+    JWT_ISSUER: http://localhost:8080/realms/toolgate
+    JWKS_URL: http://keycloak:8080/realms/toolgate/protocol/openid-connect/certs
+  depends_on:
+    mock-api:
+      condition: service_healthy
+    keycloak:
+      condition: service_healthy
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -68,3 +84,39 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; socket.create_connection(('127.0.0.1', 8000), 2).close()
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  core-read:
+    <<: *mcp-server
+    command:
+      - /bin/sh
+      - -c
+      - export CLIENT_ID=core-read CLIENT_SECRET="$$CORE_READ_CLIENT_SECRET"; exec python -m toolgate_mcp_servers.core_read
+    ports:
+      - "127.0.0.1:8101:8101"
+
+  core-write:
+    <<: *mcp-server
+    command:
+      - /bin/sh
+      - -c
+      - export CLIENT_ID=core-write CLIENT_SECRET="$$CORE_WRITE_CLIENT_SECRET"; exec python -m toolgate_mcp_servers.core_write
+    ports:
+      - "127.0.0.1:8102:8102"
+
+  comms:
+    <<: *mcp-server
+    command:
+      - /bin/sh
+      - -c
+      - export CLIENT_ID=comms CLIENT_SECRET="$$COMMS_CLIENT_SECRET"; exec python -m toolgate_mcp_servers.comms
+    ports:
+      - "127.0.0.1:8103:8103"
