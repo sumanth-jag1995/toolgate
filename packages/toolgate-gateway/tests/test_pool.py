@@ -14,6 +14,7 @@ from toolgate_gateway.downstreams import DownstreamConfig
 from toolgate_gateway.pool import (
     DownstreamPool,
     DownstreamUnavailable,
+    _http_client,
     http_session_factory,
 )
 from toolgate_pin.demo_server import build_demo_server
@@ -46,8 +47,11 @@ class MemoryFactory:
     """In-memory SessionFactory. ``fail`` maps server_id -> number of
     connection attempts that raise before one succeeds (-1 = always)."""
 
-    def __init__(self, fail: dict[str, int] | None = None):
+    def __init__(self, fail=None, *, hang=(), delay=0.0):
         self.fail = dict(fail or {})
+        self.hang = set(hang)
+        self.delay = delay
+        self.open = 0
         self.attempts: dict[str, int] = {}
         self.server_scopes: dict[str, anyio.CancelScope] = {}
         self.sessions: list[ClientSession] = []
@@ -61,6 +65,9 @@ class MemoryFactory:
             if left > 0:
                 self.fail[sid] = left - 1
             raise ConnectionError(f"{sid} is down")
+        if sid in self.hang:
+            await anyio.sleep_forever()
+        await anyio.sleep(self.delay)
         lowlevel = build_test_server()._mcp_server
         async with (
             create_client_server_memory_streams() as (client, srv),
@@ -82,7 +89,11 @@ class MemoryFactory:
                 ) as session:
                     init = await session.initialize()
                     self.sessions.append(session)
-                    yield session, init
+                    self.open += 1
+                    try:
+                        yield session, init
+                    finally:
+                        self.open -= 1
             finally:
                 tg.cancel_scope.cancel()
 
@@ -91,8 +102,8 @@ class MemoryFactory:
 async def pool_and_factory():
     pools = []
 
-    async def make(fail=None, **kw):
-        factory = MemoryFactory(fail)
+    async def make(fail=None, *, hang=(), delay=0.0, **kw):
+        factory = MemoryFactory(fail, hang=hang, delay=delay)
         pool = DownstreamPool(CONFIGS, factory, **kw)
         pools.append(pool)
         await pool.start()
@@ -225,6 +236,80 @@ async def test_close_is_idempotent_and_drops_sessions(pool_and_factory):
     assert await pool.list_tools("core-read") is None
     with pytest.raises(DownstreamUnavailable):
         await pool.call_tool("core-read", "get_claim_status", {"claim_id": "C"})
+
+
+async def test_concurrent_callers_share_one_bounded_connect(pool_and_factory):
+    pool, factory = await pool_and_factory(hang={"comms"}, call_timeout_s=1.0)
+    factory.attempts.clear()
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+
+    async def call():
+        with pytest.raises(DownstreamUnavailable):
+            await pool.call_tool("comms", "send_member_message", {})
+        return loop.time() - t0
+
+    elapsed = await asyncio.gather(*(call() for _ in range(4)))
+    assert max(elapsed) < 1.5, elapsed
+    assert factory.attempts == {"comms": 1}  # one shared connect attempt
+
+
+async def test_inflight_call_fails_fast_on_close(pool_and_factory):
+    pool, _ = await pool_and_factory(call_timeout_s=3.0)
+    loop = asyncio.get_running_loop()
+    task = asyncio.create_task(pool.call_tool("core-read", "slow", {"seconds": 10}))
+    await anyio.sleep(0.2)
+    t0 = loop.time()
+    await pool.close()
+    with pytest.raises(DownstreamUnavailable):
+        await task
+    assert loop.time() - t0 < 0.5
+
+
+async def test_inflight_call_fails_fast_on_drop(pool_and_factory):
+    pool, factory = await pool_and_factory(call_timeout_s=3.0)
+    loop = asyncio.get_running_loop()
+    task = asyncio.create_task(pool.call_tool("core-read", "slow", {"seconds": 10}))
+    await anyio.sleep(0.2)
+    t0 = loop.time()
+    pool._drop("core-read", pool._conns["core-read"])
+    with pytest.raises(DownstreamUnavailable):
+        await task
+    assert loop.time() - t0 < 0.5
+    # The next request reconnects.
+    assert await pool.list_tools("core-read") is not None
+    assert factory.attempts["core-read"] == 2
+
+
+async def test_close_waits_for_holders_started_during_close(pool_and_factory):
+    pool, factory = await pool_and_factory(fail={"comms": 1}, delay=0.2)
+    assert factory.open == 1  # core-read up, comms failed at start
+    pending = asyncio.create_task(pool.list_tools("comms"))  # reconnecting
+    await anyio.sleep(0.05)
+    await pool.close()
+    assert await pending is None
+    assert not pool._tasks
+    assert factory.open == 0
+
+
+async def test_close_bounded_with_hanging_connect(pool_and_factory):
+    pool, _ = await pool_and_factory(hang={"comms"}, call_timeout_s=1.0)
+    pending = asyncio.create_task(pool.list_tools("comms"))
+    await anyio.sleep(0.05)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    await pool.close()
+    assert loop.time() - t0 < 0.5
+    assert await pending is None
+    assert not pool._tasks
+
+
+def test_http_client_config():
+    auth = CountingAuth()
+    client = _http_client(auth)
+    assert client.timeout == httpx.Timeout(30.0, read=300.0)
+    assert client.follow_redirects is False
+    assert client.auth is auth
 
 
 # --- production HTTP factory against a real streamable HTTP server ---------
