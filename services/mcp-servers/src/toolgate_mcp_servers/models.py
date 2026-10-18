@@ -22,6 +22,18 @@ ListLimit = Annotated[
     int, Field(ge=1, le=20, description="Maximum number of items to return (1-20)")
 ]
 
+UUID_RE = (
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+IdempotencyKey = Annotated[
+    str,
+    Field(
+        pattern=UUID_RE,
+        json_schema_extra={"format": "uuid"},
+        description="Client-generated UUID; retrying with the same key replays the original result",
+    ),
+]
+
 ProcedureCode = Literal[
     "mri_scan",
     "ct_scan",
@@ -133,3 +145,18 @@ class CorrespondenceItem(BaseModel):
 
 class CorrespondenceList(BaseModel):
     correspondence: list[CorrespondenceItem]
+
+
+class ClaimCreated(BaseModel):
+    claim_id: str
+    status: ClaimStatus
+
+
+class NoteAdded(BaseModel):
+    note_id: int
+    claim_id: str
+
+
+class ContactPreferenceUpdated(BaseModel):
+    member_id: str
+    contact_preference: ContactPreference
