@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import itertools
 import logging
 import time
 from collections.abc import Mapping
@@ -60,6 +61,10 @@ _WITHHELD = "tool output withheld by policy"
 # logs (it is unbounded on the wire; a known name is far shorter).
 MAX_LOGGED_NAME = 256
 
+# Errors examined to name the failing schema keyword (bounds the cost of a
+# huge argument with many invalid items).
+MAX_SCHEMA_ERRORS = 20
+
 
 def _unavailable(server_id: str) -> str:
     # server_id is a configured (validated) id, never caller-supplied text.
@@ -78,11 +83,16 @@ def _schema_failure(validator: Draft202012Validator, args: Any) -> str | None:
     if not isinstance(args, Mapping):
         return "schema: not an object"
     try:
-        error = best_match(validator.iter_errors(args))
+        # is_valid stops at the first error; only a failure pays for picking
+        # a reason, and then from at most MAX_SCHEMA_ERRORS errors.
+        if validator.is_valid(args):
+            return None
+        errors = itertools.islice(validator.iter_errors(args), MAX_SCHEMA_ERRORS)
+        error = best_match(errors)
     except Exception:  # noqa: BLE001 - cannot validate: fail closed
         return "schema: validation failed"
-    if error is None:
-        return None
+    if error is None:  # cannot happen after is_valid failed; fail closed
+        return "schema: validation failed"
     return f"schema: {error.validator}"
 
 

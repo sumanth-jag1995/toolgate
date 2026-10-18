@@ -1,14 +1,11 @@
 import asyncio
 import socket
-from contextlib import asynccontextmanager
 
 import anyio
 import httpx
 import pytest
 import uvicorn
-from mcp.client.session import ClientSession
 from mcp.server.fastmcp import Context, FastMCP
-from mcp.shared.memory import create_client_server_memory_streams
 from mcp.types import TextContent
 from toolgate_gateway.downstreams import DownstreamConfig
 from toolgate_gateway.pool import (
@@ -43,67 +40,14 @@ def build_test_server() -> FastMCP:
     return server
 
 
-class MemoryFactory:
-    """In-memory SessionFactory. ``fail`` maps server_id -> number of
-    connection attempts that raise before one succeeds (-1 = always)."""
-
-    def __init__(self, fail=None, *, hang=(), delay=0.0):
-        self.fail = dict(fail or {})
-        self.hang = set(hang)
-        self.delay = delay
-        self.open = 0
-        self.attempts: dict[str, int] = {}
-        self.server_scopes: dict[str, anyio.CancelScope] = {}
-        self.sessions: list[ClientSession] = []
-
-    @asynccontextmanager
-    async def __call__(self, config, *, message_handler=None):
-        sid = config.server_id
-        self.attempts[sid] = self.attempts.get(sid, 0) + 1
-        left = self.fail.get(sid, 0)
-        if left:
-            if left > 0:
-                self.fail[sid] = left - 1
-            raise ConnectionError(f"{sid} is down")
-        if sid in self.hang:
-            await anyio.sleep_forever()
-        await anyio.sleep(self.delay)
-        lowlevel = build_test_server()._mcp_server
-        async with (
-            create_client_server_memory_streams() as (client, srv),
-            anyio.create_task_group() as tg,
-        ):
-            scope = anyio.CancelScope()
-
-            async def run_server():
-                with scope:
-                    await lowlevel.run(
-                        srv[0], srv[1], lowlevel.create_initialization_options()
-                    )
-
-            tg.start_soon(run_server)
-            self.server_scopes[sid] = scope
-            try:
-                async with ClientSession(
-                    client[0], client[1], message_handler=message_handler
-                ) as session:
-                    init = await session.initialize()
-                    self.sessions.append(session)
-                    self.open += 1
-                    try:
-                        yield session, init
-                    finally:
-                        self.open -= 1
-            finally:
-                tg.cancel_scope.cancel()
-
-
 @pytest.fixture
-async def pool_and_factory():
+async def pool_and_factory(memory_factory_cls):
     pools = []
 
     async def make(fail=None, *, hang=(), delay=0.0, **kw):
-        factory = MemoryFactory(fail, hang=hang, delay=delay)
+        factory = memory_factory_cls(
+            build_test_server, fail=fail, hang=hang, delay=delay
+        )
         pool = DownstreamPool(CONFIGS, factory, **kw)
         pools.append(pool)
         await pool.start()
