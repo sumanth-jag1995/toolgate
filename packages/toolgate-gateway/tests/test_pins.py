@@ -85,3 +85,17 @@ def test_corrupt_at_startup_lists_nothing(tmp_path):
     src = PinSource(path)
     assert src.current() is None
     assert src.pinner() is None
+
+
+def test_same_size_rewrite_with_identical_mtime_is_picked_up(tmp_path):
+    path = tmp_path / "toolgate.lock.json"
+    _write(path, _pinset("h1"))
+    before = path.stat()
+    src = PinSource(path)
+    assert src.current().get("s").tools["t"].hash == "h1"
+
+    _write(path, _pinset("h2"))  # same size, atomic replace
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = path.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+    assert src.current().get("s").tools["t"].hash == "h2"

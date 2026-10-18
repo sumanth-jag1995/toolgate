@@ -1,7 +1,7 @@
 """PinSource: hot-reloaded pins from the git-committed lockfile.
 
-The file is re-read only when its ``(mtime_ns, size)`` changes. A missing
-lockfile means no pins (every tool unpinned). A corrupt or unreadable one
+The file is re-read only when its ``(ino, mtime_ns, ctime_ns, size)``
+changes. A missing lockfile means no pins (every tool unpinned). A corrupt or unreadable one
 keeps the last good pins until they have been unconfirmed for longer than
 ``stale_after_s``; after that (or with no good pins at all) the source
 returns None and the gateway lists nothing.
@@ -68,7 +68,9 @@ class PinSource:
             return _MISSING
         except OSError:
             return None  # cannot stat: always attempt (and fail) a read
-        return (st.st_mtime_ns, st.st_size)
+        # The inode (file id on Windows) changes on every atomic replace, so
+        # a same-size rewrite with a preserved mtime is still detected.
+        return (st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
 
     def _maybe_reload(self) -> None:
         sig = self._signature()

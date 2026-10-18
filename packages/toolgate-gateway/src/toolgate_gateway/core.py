@@ -6,6 +6,10 @@ reviews, rebuilds the snapshot from the allowed tools, and returns the
 caller's allowlisted tools under namespaced names. tools/call (Task 6) only
 consults the snapshot.
 
+The snapshot serves the PINNED definition, never the live one: the pin hash
+covers only the normalized hashed fields, so a downstream could otherwise add
+``_meta``, ``icons``, extra fields or whitespace variants and still match.
+
 Logs carry server ids, tool names, reasons and hashes only: never tool
 definitions, arguments or results.
 """
@@ -22,7 +26,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from mcp.types import Tool
-from toolgate_pin import InventoryTool, Pinner, PinSet, Quarantine, pin_hash
+from toolgate_pin import InventoryTool, Pinner, PinSet, Quarantine
 
 from toolgate_gateway.audit import AuditWriter
 from toolgate_gateway.downstreams import namespaced
@@ -44,7 +48,7 @@ _REVIEWED = frozenset({"drift", "unpinned", "server_drift"})
 @dataclass(frozen=True)
 class SnapshotEntry:
     server_id: str
-    tool: Tool  # as the downstream listed it (original name)
+    tool: Tool  # the pinned definition (original, un-namespaced name)
     namespaced: str
     tool_hash: str
     input_validator: Draft202012Validator
@@ -82,7 +86,11 @@ class GatewayCore:
         # server_id -> every tool name that server listed on the last refresh
         # (quarantined ones included), for output scanning.
         self.inventory: dict[str, list[InventoryTool]] = {}
-        self._validators: dict[str, Draft202012Validator] = {}
+        # (server_id, tool name, pin hash) -> (pinned Tool, validator); valid
+        # for one PinSet only, since equal hashes may have unequal definitions.
+        self._compiled: dict[tuple[str, str, str], tuple[Tool, Draft202012Validator]]
+        self._compiled = {}
+        self._compiled_for: PinSet | None = None
         self._started = 0  # refresh generations
         self._applied = 0
 
@@ -112,24 +120,24 @@ class GatewayCore:
             pinset: PinSet | None = None
         else:
             pinset, pinner = state
-            snapshot, inventory, quarantines = await self._build(pinner)
+            snapshot, inventory, quarantines = await self._build(pinset, pinner)
 
-        # A slower, older refresh never overwrites a newer one.
-        if generation > self._applied:
-            self._applied = generation
-            self.snapshot = snapshot
-            self.inventory = inventory
-            live = {e.tool_hash for e in snapshot.values()}
-            self._validators = {h: v for h, v in self._validators.items() if h in live}
+        # A slower, older refresh never overwrites a newer one, and its
+        # (outdated) review bookkeeping is skipped.
+        if generation <= self._applied:
+            return self.snapshot
+        self._applied = generation
+        self.snapshot = snapshot
+        self.inventory = inventory
 
         for server_id, q in quarantines:
             self._alert(server_id, q)
         if self.reviews is not None and pinset is not None:
-            await self._update_reviews(pinset, quarantines)
+            await self._update_reviews(generation, pinset, quarantines)
         return snapshot
 
     async def _build(
-        self, pinner: Pinner
+        self, pinset: PinSet, pinner: Pinner
     ) -> tuple[
         dict[str, SnapshotEntry],
         dict[str, list[InventoryTool]],
@@ -155,7 +163,7 @@ class GatewayCore:
                 (server_id, q) for q in quarantined if q.reason in _REVIEWED
             )
             for tool in allowed:
-                entry = self._entry(server_id, tool)
+                entry = self._entry(pinset, server_id, tool.name)
                 if entry is not None:
                     snapshot[entry.namespaced] = entry
         return snapshot, inventory, quarantines
@@ -174,23 +182,36 @@ class GatewayCore:
             return [], []
         return list(result.allowed), list(result.quarantined)
 
-    def _entry(self, server_id: str, tool: Tool) -> SnapshotEntry | None:
-        name = namespaced(server_id, tool.name)
-        tool_hash = pin_hash(tool)  # matched the pin, so it canonicalizes
-        validator = self._validators.get(tool_hash)
-        if validator is None:
+    def _entry(
+        self, pinset: PinSet, server_id: str, tool_name: str
+    ) -> SnapshotEntry | None:
+        """Snapshot entry built from the pin of an allowed (hash-matching)
+        tool. None (with a warning) if the pinned definition is unusable."""
+        if self._compiled_for is not pinset:
+            self._compiled, self._compiled_for = {}, pinset
+        name = namespaced(server_id, tool_name)
+        sp = pinset.get(server_id)
+        pin = sp.tools.get(tool_name) if sp is not None else None
+        if pin is None:  # cannot happen for an allowed tool; fail closed
+            return None
+        key = (server_id, tool_name, pin.hash)
+        compiled = self._compiled.get(key)
+        if compiled is None:
             try:
-                validator = compile_validator(tool.inputSchema)
-            except SchemaError:
+                served = Tool.model_validate(pin.definition)
+                validator = compile_validator(served.inputSchema)
+            except (ValueError, SchemaError) as exc:
                 log.warning(
-                    "pinned inputSchema of %s (hash %s) is not a valid JSON "
-                    "Schema; omitting the tool",
+                    "pinned definition of %r (hash %s) is unusable (%s); "
+                    "omitting the tool",
                     name,
-                    tool_hash,
+                    pin.hash,
+                    type(exc).__name__,
                 )
                 return None
-            self._validators[tool_hash] = validator
-        return SnapshotEntry(server_id, tool, name, tool_hash, validator)
+            compiled = self._compiled[key] = (served, validator)
+        served, validator = compiled
+        return SnapshotEntry(server_id, served, name, pin.hash, validator)
 
     # -- reviews and alerts ------------------------------------------------
 
@@ -215,7 +236,10 @@ class GatewayCore:
         )
 
     async def _update_reviews(
-        self, pinset: PinSet, quarantines: list[tuple[str, Quarantine]]
+        self,
+        generation: int,
+        pinset: PinSet,
+        quarantines: list[tuple[str, Quarantine]],
     ) -> None:
         reviews = self.reviews
         assert reviews is not None
@@ -240,11 +264,12 @@ class GatewayCore:
                 for (sid, q), outcome in zip(quarantines, outcomes, strict=True):
                     if isinstance(outcome, BaseException):
                         log.warning(
-                            "recording pending review for %s.%s failed (%s)",
+                            "recording pending review for %s %r failed (%s)",
                             sid,
                             q.tool_name,
                             type(outcome).__name__,
                         )
-                await reviews.resolve_pinned(pinset)
+                if generation == self._applied:  # not superseded meanwhile
+                    await reviews.resolve_pinned(pinset)
         except Exception as exc:  # noqa: BLE001 - reviews never fail the list
             log.warning("updating pending reviews failed (%s)", type(exc).__name__)
