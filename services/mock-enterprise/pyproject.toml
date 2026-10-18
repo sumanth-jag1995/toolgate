@@ -3,7 +3,12 @@ name = "mock-enterprise"
 version = "0.1.0"
 description = "Mock enterprise system (synthetic data) for Toolgate"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "sqlalchemy[asyncio]>=2",
+    "asyncpg",
+    "pydantic-settings",
+    "faker",
+]
 
 [build-system]
 requires = ["hatchling"]
