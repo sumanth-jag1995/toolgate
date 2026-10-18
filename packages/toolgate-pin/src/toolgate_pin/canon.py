@@ -26,12 +26,17 @@ def as_definition(tool: mcp.types.Tool | Mapping[str, Any]) -> dict[str, Any]:
         raw: Mapping[str, Any] = tool.model_dump(by_alias=True, exclude_none=True)
     else:
         raw = tool
-    return {k: _drop_none(raw[k]) for k in HASHED_FIELDS if raw.get(k) is not None}
+    out = {k: raw[k] for k in HASHED_FIELDS if raw.get(k) is not None}
+    # Only `annotations` is a typed sub-model: model_dump(exclude_none=True)
+    # strips its nested Nones. inputSchema/outputSchema are Any-typed, so their
+    # nulls (e.g. `const: null`) survive model_dump and must stay hashed.
+    if "annotations" in out:
+        out["annotations"] = _drop_none(out["annotations"])
+    return out
 
 
 def _drop_none(node: Any) -> Any:
-    # Mirrors model_dump(exclude_none=True): None-valued mapping entries vanish
-    # at any depth, so Tool objects and plain dicts hash identically.
+    # Drop None-valued mapping entries at any depth (annotations only).
     if isinstance(node, Mapping):
         return {k: _drop_none(v) for k, v in node.items() if v is not None}
     if isinstance(node, (list, tuple)):

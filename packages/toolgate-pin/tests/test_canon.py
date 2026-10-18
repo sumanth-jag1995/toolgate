@@ -97,3 +97,23 @@ def test_nested_none_dropped_tool_and_dict_equal():
         annotations=mcp.types.ToolAnnotations(readOnlyHint=True),
     )
     assert pin_hash({**BASE, "annotations": ann}) == pin_hash(tool)
+
+
+def _with_prop(prop):
+    return {
+        **BASE,
+        "inputSchema": {"type": "object", "properties": {"p": prop}},
+    }
+
+
+def test_schema_null_const_differs_from_absent():
+    assert pin_hash(_with_prop({"const": None})) != pin_hash(_with_prop({}))
+    assert pin_hash(_with_prop({"default": None})) != pin_hash(_with_prop({}))
+
+
+def test_schema_null_tool_and_dict_equal():
+    schema = {"type": "object", "properties": {"p": {"default": None}}}
+    tool = mcp.types.Tool(
+        name=BASE["name"], description=BASE["description"], inputSchema=schema
+    )
+    assert pin_hash(tool) == pin_hash({**BASE, "inputSchema": schema})
