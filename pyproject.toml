@@ -13,6 +13,7 @@ dev = [
     "pre-commit",
     "testcontainers[postgres]",
     "httpx>=0.28.1",
+    "opentelemetry-sdk>=1.45.1",
 ]
 
 [tool.uv]
