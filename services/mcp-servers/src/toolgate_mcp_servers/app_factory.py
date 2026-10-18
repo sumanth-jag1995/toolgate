@@ -5,7 +5,7 @@ from mcp.server.fastmcp import FastMCP
 
 from toolgate_mcp_servers.api_client import ApiClient, ClientCredentialsTokenProvider
 from toolgate_mcp_servers.auth import JwtTokenVerifier
-from toolgate_mcp_servers.hardening import harden_schemas
+from toolgate_mcp_servers.hardening import forbid_extra_arguments, harden_schemas
 from toolgate_mcp_servers.settings import ServerSettings
 
 
@@ -45,4 +45,5 @@ def build_server(
         mcp = FastMCP(name, host=settings.host, port=settings.port)
     register(mcp, api_client)
     harden_schemas(mcp)
+    forbid_extra_arguments(mcp)
     return mcp

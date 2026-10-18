@@ -31,6 +31,21 @@ def _harden(node: Any) -> None:
         _harden(node.get(key))
 
 
+def forbid_extra_arguments(mcp: FastMCP) -> None:
+    """Make every tool reject undeclared arguments at call time.
+
+    FastMCP 1.x validates arguments with a generated pydantic model that ignores
+    extras by default, even though the advertised schema says otherwise. We flip
+    that model to ``extra="forbid"`` and rebuild it (uses
+    ``mcp._tool_manager._tools[name].fn_metadata.arg_model``). Validation errors
+    surface as tool errors (``isError``).
+    """
+    for tool in mcp._tool_manager._tools.values():
+        arg_model = tool.fn_metadata.arg_model
+        arg_model.model_config["extra"] = "forbid"
+        arg_model.model_rebuild(force=True)
+
+
 def harden_schemas(mcp: FastMCP) -> None:
     """Set ``additionalProperties: false`` on every object node of every tool input schema."""
     for tool in mcp._tool_manager._tools.values():
