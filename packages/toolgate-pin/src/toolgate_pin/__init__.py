@@ -15,6 +15,7 @@ from toolgate_pin.models import (
     VerifyResult,
 )
 from toolgate_pin.pinner import Pinner
+from toolgate_pin.scanner import ScanConfig, scan_definition, scan_output
 from toolgate_pin.store import InMemoryStore, LockfileError, LockfileStore
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "PinSet",
     "Pinner",
     "Quarantine",
+    "ScanConfig",
     "ScanReport",
     "ServerPin",
     "Target",
@@ -37,4 +39,6 @@ __all__ = [
     "canonicalize",
     "diff",
     "pin_hash",
+    "scan_definition",
+    "scan_output",
 ]

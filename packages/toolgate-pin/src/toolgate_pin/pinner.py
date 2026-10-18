@@ -10,7 +10,15 @@ import mcp.types
 from toolgate_pin import tracing
 from toolgate_pin.canon import as_definition, pin_hash
 from toolgate_pin.difftext import diff
-from toolgate_pin.models import PinSet, Quarantine, ServerPin, VerifyResult
+from toolgate_pin.models import (
+    Finding,
+    InventoryTool,
+    PinSet,
+    Quarantine,
+    ServerPin,
+    VerifyResult,
+)
+from toolgate_pin.scanner import scan_definition
 from toolgate_pin.store import PinStore
 
 _UNCANONICALIZABLE = "definition could not be canonicalized"
@@ -62,6 +70,21 @@ def _safe_diff(pinned: dict | None, tool: Any, error: str) -> str:
         return f"{_UNCANONICALIZABLE} for diff ({type(exc).__name__})"
 
 
+def _safe_findings(
+    tool: Any,
+    server_id: str,
+    prior: dict | None,
+    inventory: tuple[InventoryTool, ...],
+) -> tuple[Finding, ...]:
+    """Rules-tier findings for a quarantined tool. Never raises on tool content."""
+    try:
+        return scan_definition(
+            tool, server_id=server_id, prior=prior, inventory=inventory
+        ).findings
+    except Exception:  # noqa: BLE001  hostile content must never crash the gateway
+        return ()
+
+
 class Pinner:
     def __init__(self, store: PinStore) -> None:
         self._store = store
@@ -90,6 +113,8 @@ class Pinner:
         with tracing.span(
             "toolgate.pin.verify", **{"toolgate.server_id": server_id}
         ) as span:
+            # Pinner-triggered scans see this server's other tools from this call.
+            inventory = tuple(InventoryTool(server_id, n) for n in dict.fromkeys(names))
             first_seen: dict[str, str | None] = {}
             for tool, name in zip(items, names, strict=True):
                 observed, err = _safe_hash(tool)
@@ -130,6 +155,14 @@ class Pinner:
                         observed_hash=observed,
                         pinned_hash=pin.hash if pin is not None else None,
                         diff=_safe_diff(pin.definition if pin else None, tool, err),
+                        findings=_safe_findings(
+                            tool,
+                            server_id,
+                            pin.definition if pin is not None else None,
+                            inventory,
+                        )
+                        if reason in ("drift", "unpinned")
+                        else (),
                     )
                 )
 
