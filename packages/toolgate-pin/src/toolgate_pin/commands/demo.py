@@ -14,7 +14,7 @@ from toolgate_pin.demo_server import build_demo_server
 from toolgate_pin.models import PinSet, Target
 from toolgate_pin.pinner import Pinner
 from toolgate_pin.pinning import pin_server
-from toolgate_pin.reveal import decode_tag_text, safe_print
+from toolgate_pin.reveal import decode_tag_text, safe_print, stream_can_encode
 from toolgate_pin.store import InMemoryStore
 
 SERVER_ID = "insurer-demo"
@@ -31,16 +31,24 @@ async def _list(mutated: bool) -> tuple[list[mcp.types.Tool], Any]:
 def _ascii_brackets(text: str, out: TextIO) -> str:
     """diff() marks hidden characters with unicode brackets; use ASCII ones if
     the stream cannot encode them."""
-    try:
-        "⟦⟧".encode(getattr(out, "encoding", None) or "utf-8")
-    except (UnicodeEncodeError, LookupError):
-        return text.replace("⟦", "[[").replace("⟧", "]]")
-    return text
+    if stream_can_encode(out, "⟦⟧"):
+        return text
+    return text.replace("⟦", "[[").replace("⟧", "]]")
 
 
 def run(no_fail: bool, out: TextIO | None = None) -> int:
     out = out if out is not None else sys.stdout
-    logging.getLogger("mcp").setLevel(logging.WARNING)  # quiet per-request INFO
+    mcp_logger = logging.getLogger("mcp")
+    previous = mcp_logger.level
+    mcp_logger.setLevel(logging.WARNING)  # quiet per-request INFO
+    try:
+        return _run(no_fail, out)
+    finally:
+        mcp_logger.setLevel(previous)
+
+
+def _run(no_fail: bool, out: TextIO) -> int:
+    ok, bad = ("✓", "✗") if stream_can_encode(out, "✓✗") else ("[ok]", "[x]")
     colour = bool(getattr(out, "isatty", lambda: False)())
 
     def paint(text: str, code: str) -> str:
@@ -68,10 +76,10 @@ def run(no_fail: bool, out: TextIO | None = None) -> int:
     result = pinner.verify(SERVER_ID, mutated_tools, server_info=mutated_info)
 
     emit(paint("toolgate-pin demo: pin a server, then change one tool", "1"))
-    emit(paint(f"✓ pinned {len(clean_tools)} tools", "32"))
+    emit(paint(f"{ok} pinned {len(clean_tools)} tools", "32"))
     by_name = {t.name: t for t in mutated_tools}
     for q in result.quarantined:
-        emit(paint(f"✗ quarantined {q.tool_name} ({q.reason})", "31"))
+        emit(paint(f"{bad} quarantined {q.tool_name} ({q.reason})", "31"))
         emit(_ascii_brackets(q.diff, out))
         tool = by_name.get(q.tool_name)
         hidden = decode_tag_text(tool.description or "") if tool else None

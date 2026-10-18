@@ -56,6 +56,9 @@ def test_demo_on_cp1252_stdout(monkeypatch):
     stream.flush()
     text = raw.getvalue().decode("cp1252")
     assert "[[U+E0042" in text
+    assert "\u2713" not in text and "\u2717" not in text
+    assert "[ok] pinned 4 tools" in text
+    assert "[x] quarantined get_claim_status (drift)" in text
 
 
 async def _tools(mutated: bool):
@@ -72,3 +75,12 @@ def test_demo_server_tools_listed():
     assert (
         clean["get_claim_status"].description != mutated["get_claim_status"].description
     )
+
+
+def test_demo_restores_mcp_logger_level():
+    import logging
+
+    lg = logging.getLogger("mcp")
+    lg.setLevel(logging.DEBUG)
+    cli.main(["demo"])
+    assert lg.level == logging.DEBUG
