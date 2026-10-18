@@ -214,8 +214,7 @@
       "fullScopeAllowed": false,
       "defaultClientScopes": [
         "claims:write",
-        "members:write",
-        "comms:write"
+        "members:write"
       ],
       "optionalClientScopes": [],
       "attributes": {

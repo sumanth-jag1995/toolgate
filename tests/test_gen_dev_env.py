@@ -61,3 +61,17 @@ def test_committed_template_renders_with_example_keys(tmp_path):
     rendered = json.loads(out.read_text())
     assert rendered["realm"] == "toolgate"
     assert "${" not in out.read_text()
+
+
+def test_committed_template_client_default_scopes_are_exact():
+    data = json.loads(TEMPLATE.read_text())
+    got = {c["clientId"]: set(c["defaultClientScopes"]) for c in data["clients"]}
+    assert got["core-read"] == {
+        "members:read",
+        "policies:read",
+        "claims:read",
+        "payments:read",
+        "comms:read",
+    }
+    assert got["core-write"] == {"claims:write", "members:write"}
+    assert got["comms"] == {"comms:write"}
