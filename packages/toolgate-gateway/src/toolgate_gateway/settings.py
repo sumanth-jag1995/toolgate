@@ -20,6 +20,9 @@ class GatewaySettings(BaseSettings):
     downstreams_path: Path
     host: str = "0.0.0.0"
     port: int = 8200
+    # Externally visible base URL; the protected resource is ``<public_url>/mcp``
+    # (RFC 9728 metadata and the WWW-Authenticate resource_metadata link).
+    public_url: str = "http://localhost:8200"
     otlp_endpoint: str | None = Field(
         default=None, validation_alias="OTEL_EXPORTER_OTLP_ENDPOINT"
     )

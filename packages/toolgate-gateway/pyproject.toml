@@ -13,6 +13,8 @@ dependencies = [
     "asyncpg>=0.32.0",
     "rfc8785>=0.1.4",
     "jsonschema>=4.20",
+    "uvicorn>=0.54.0",
+    "starlette>=1.8.0",
 ]
 
 [project.scripts]

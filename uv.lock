@@ -1683,7 +1683,9 @@ dependencies = [
     { name = "pyjwt", extra = ["crypto"] },
     { name = "pyyaml" },
     { name = "rfc8785" },
+    { name = "starlette" },
     { name = "toolgate-pin" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -1696,7 +1698,9 @@ requires-dist = [
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "rfc8785", specifier = ">=0.1.4" },
+    { name = "starlette", specifier = ">=1.8.0" },
     { name = "toolgate-pin", editable = "packages/toolgate-pin" },
+    { name = "uvicorn", specifier = ">=0.54.0" },
 ]
 
 [[package]]

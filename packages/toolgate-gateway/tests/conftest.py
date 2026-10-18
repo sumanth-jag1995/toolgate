@@ -58,13 +58,14 @@ def make_token(rsa_key):
         claims = {
             "iss": iss,
             "aud": aud,
-            "sub": sub,
             "scope": " ".join(scopes),
             "iat": now,
             "exp": now + exp_delta,
         }
         if azp is not None:
             claims["azp"] = azp
+        if sub is not None:
+            claims["sub"] = sub
         return jwt.encode(
             claims, key or rsa_key, algorithm=algorithm, headers={"kid": "test"}
         )
