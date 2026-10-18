@@ -13,7 +13,7 @@ from toolgate_pin.scanner import TIERS
 
 
 def _classifier_available() -> bool:
-    """True when the optional classifier tier (Task 10) can run here."""
+    """True when the optional classifier tier can run here."""
     try:
         mod = importlib.import_module("toolgate_pin.scanner.classifier")
     except ImportError:
@@ -39,15 +39,19 @@ def _tier_objects(tiers: tuple[str, ...], no_cache: bool) -> tuple[Any, Any]:
     """(classifier, judge) scorers for the requested tiers.
 
     The judge is built only when requested and OPENROUTER_API_KEY is set; a
-    missing scorer is reported unavailable by run_bench. (The classifier is
-    built by a later task.)
+    missing scorer is reported unavailable by run_bench.
     """
+    classifier = None
+    if "classifier" in tiers and _classifier_available():
+        from toolgate_pin.scanner.classifier import Classifier
+
+        classifier = Classifier()
     judge = None
     if "judge" in tiers:
         from toolgate_pin.scanner.judge import Judge
 
         judge = Judge.from_env(use_cache=not no_cache)
-    return None, judge
+    return classifier, judge
 
 
 def run(*, split: str, tiers: str | None, fmt: str, no_cache: bool) -> int:

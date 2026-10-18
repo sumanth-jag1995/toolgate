@@ -129,7 +129,11 @@ def test_reapprove_keeps_unchanged_approvals(tmp_path):
     assert second["get_claim_status"]["hash"] != first["get_claim_status"]["hash"]
 
 
-def test_approve_unavailable_tiers_reported(tmp_path, capsys):
+def test_approve_unavailable_tiers_reported(tmp_path, capsys, monkeypatch):
+    from toolgate_pin.scanner import classifier
+
+    monkeypatch.setattr(classifier, "available", lambda: False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     lock = tmp_path / "toolgate.lock.json"
     assert _approve(lock, "--judge", "--classifier") == 0
     out = capsys.readouterr()

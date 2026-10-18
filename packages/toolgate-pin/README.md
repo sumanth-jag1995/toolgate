@@ -75,11 +75,12 @@ from toolgate_pin import Pinner, LockfileStore
 
 pinner = Pinner(LockfileStore("toolgate.lock.json"))
 
+
 async def list_tools_for_agent(server_id, session):
     tools = (await session.list_tools()).tools
-    result = pinner.verify(server_id, tools)     # never raises on drift
+    result = pinner.verify(server_id, tools)  # never raises on drift
     for q in result.quarantined:
-        alert(q.tool_name, q.reason, q.diff)     # caller's choice
+        alert(q.tool_name, q.reason, q.diff)  # caller's choice
     return result.allowed
 ```
 
@@ -173,7 +174,7 @@ A corrupt lockfile or one with a newer `version` is rejected at load, and the CL
 | Tier | Install | Runs | Notes |
 |---|---|---|---|
 | rules | core | default | 17 rule IDs: hidden Unicode (`TG-UNI-*`), instructions aimed at the model (`TG-INS-*`), references to tools on other servers and ordering phrasing (`TG-XREF-*`), exfiltration indicators (`TG-EXF-*`), side-channel parameters (`TG-SIDE-001`), cross-server name shadowing (`TG-SHADOW-001`) |
-| classifier | `pip install "toolgate-pin[classifier]"` | `--classifier` | Planned for a later release; not yet built. Will use an ONNX export of a prompt-injection model via `onnxruntime`, `tokenizers` and `huggingface-hub`, downloaded on first use. |
+| classifier | `pip install "toolgate-pin[classifier]"` | `--classifier` | Local ONNX export of `protectai/deberta-v3-base-prompt-injection-v2` (Apache-2.0) via `onnxruntime`, `tokenizers` and `huggingface-hub`, CPU only. The ~700 MB model is downloaded on first use into the Hugging Face cache, pinned to one commit. Score is the maximum injection probability over the description and every parameter description (512 tokens each). Thresholds: malicious at 0.999, suspicious at 0.998, tuned on the dev split only. |
 | judge | core | `--judge` | LLM judge through OpenRouter. Needs `OPENROUTER_API_KEY`; model from `TOOLGATE_JUDGE_MODEL`, default `google/gemma-4-31b-it:free` (pending live validation). Results cached by definition hash, prompt version and model; `--no-cache` bypasses. A failed API call marks the tier unavailable and is never counted as a pass. |
 
 The other extra is `[otel]` (`opentelemetry-api`) for tracing.
@@ -208,24 +209,24 @@ Limitations to weigh when reading the numbers:
 
 - The dev split overlaps some test-split techniques, and several rug-pull variants differ mainly in wording, so detection rates may overstate how well the rules generalise to attacks written by someone else.
 - Three variants (`rp-04`, `rp-05`, `us-03`) cannot produce a canary leak in the later agent evaluation. The `us-03` bidi variant hides its payload from the model rather than from the human reader.
-- The test split was run twice: once when the rules were frozen, and once after a review fix to the send-to-host rule. Both runs gave identical numbers. Thresholds were tuned on the dev split only.
+- The test split was run twice: once when the rules were frozen, and once after a review fix to the send-to-host rule. Both runs gave identical numbers. Classifier thresholds were tuned on the dev split only, and the test split was then run once with the classifier.
 
 ## Results
 
 Output of `toolgate-pin bench --format md` (test split, corpus v1):
 
-toolgate-pin bench — tiers: rules; unavailable: classifier, judge
+toolgate-pin bench — tiers: rules, classifier; unavailable: judge   corpus v1, split test
 
 | family | n | rules | +classifier | +judge | caught by pin |
 |---|--:|--:|--:|--:|--:|
-| description_poisoning | 10 | 8/10 | — | — | n/a |
-| rug_pull | 10 | 7/10 | — | — | 10/10 |
-| shadowing | 5 | 5/5 | — | — | n/a |
-| unicode_schema | 5 | 5/5 | — | — | n/a |
-| output_injection | 6 | 5/6 | rules only — runtime scanner | | |
-| benign (false pos.) | 50 | 0/50 | — | — | |
+| description_poisoning | 10 | 8/10 | 8/10 | — | n/a |
+| rug_pull | 10 | 7/10 | 7/10 | — | 10/10 |
+| shadowing | 5 | 5/5 | 5/5 | — | n/a |
+| unicode_schema | 5 | 5/5 | 5/5 | — | n/a |
+| output_injection | 6 | 5/6 | rules only — runtime scanner |  |  |
+| benign (false pos.) | 50 | 0/50 | 5/50 | — |  |
 
-**Only the rules tier has been run.** The judge tier has not been run live (no OpenRouter key was available during development) and the classifier tier is not built yet, so the `+classifier` and `+judge` columns are empty. The judge's default model, `google/gemma-4-31b-it:free`, is pending live validation. For rug pulls, the scanner column scores the mutated definition against the approved one; the hash pin itself catches 10 of 10 because every mutation changes the hash. See the corpus limitations above before treating these rates as a general claim.
+**Rules and classifier tiers have been run; the judge has not.** The judge tier has not been run live (no OpenRouter key was available during development), so the `+judge` column is empty; its default model, `google/gemma-4-31b-it:free`, is pending live validation. The classifier adds no detections on this corpus (the rules already catch everything it catches) and adds 5 false positives out of 50 benign tools, even with thresholds set above the highest benign dev score (0.9957). On the dev split the model scored 3 of 15 benign tools between 0.97 and 0.996 (a German-language note tool, a "replaces the whole file" warning, and a plain timer tool), so this model, used alone on short tool descriptions, is noisy. Treat the classifier as an optional extra signal, not a gate you should rely on. For rug pulls, the scanner column scores the mutated definition against the approved one; the hash pin itself catches 10 of 10 because every mutation changes the hash. See the corpus limitations above before treating these rates as a general claim.
 
 ## License
 

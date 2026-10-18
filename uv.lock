@@ -1717,12 +1717,12 @@ otel = [
 
 [package.metadata]
 requires-dist = [
-    { name = "huggingface-hub", marker = "extra == 'classifier'" },
+    { name = "huggingface-hub", marker = "extra == 'classifier'", specifier = ">=0.24" },
     { name = "mcp", specifier = ">=1.12,<2" },
-    { name = "onnxruntime", marker = "extra == 'classifier'" },
+    { name = "onnxruntime", marker = "extra == 'classifier'", specifier = ">=1.18" },
     { name = "opentelemetry-api", marker = "extra == 'otel'" },
     { name = "rfc8785" },
-    { name = "tokenizers", marker = "extra == 'classifier'" },
+    { name = "tokenizers", marker = "extra == 'classifier'", specifier = ">=0.19" },
 ]
 provides-extras = ["classifier", "otel"]
 

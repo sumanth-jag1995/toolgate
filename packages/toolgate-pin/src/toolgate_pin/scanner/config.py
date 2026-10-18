@@ -15,8 +15,11 @@ class ScanConfig:
     # Hosts allowed in URLs and email addresses. An entry matches the host
     # exactly or as a dot-suffix: "example.com" allows "docs.example.com".
     url_allowlist: tuple[str, ...] = ()
-    classifier_high: float = 0.9
-    classifier_grey: float = 0.5
+    # Tuned on the dev split only (Task 12), then frozen. The model scores
+    # 3 of 15 dev benign tools at 0.97-0.996 (all above 0.5), so the cutoffs
+    # sit above the highest benign dev score.
+    classifier_high: float = 0.999
+    classifier_grey: float = 0.998
 
 
 # Documentation and code hosts that legitimate tool descriptions link to.

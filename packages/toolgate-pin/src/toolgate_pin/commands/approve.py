@@ -95,6 +95,13 @@ def run(
 
         judge = Judge.from_env(env=env)  # None without a key: reported unavailable
 
+    classifier = None
+    if "classifier" in tiers:
+        from toolgate_pin.scanner import classifier as classifier_mod
+
+        if classifier_mod.available():
+            classifier = classifier_mod.Classifier()
+
     def emit(text: str = "") -> None:
         safe_print(ascii_brackets(text, out), file=out)
 
@@ -164,6 +171,7 @@ def run(
             inventory=inventory,
             tiers=tiers,
             judge=judge,
+            classifier=classifier,
         )
         reports[tool.name] = report
         unavailable.update(report.unavailable)

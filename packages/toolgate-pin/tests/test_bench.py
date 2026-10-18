@@ -40,6 +40,9 @@ def test_cli_bench_exit_0(capsys):
 
 def test_cli_auto_mode_lists_unrun_tiers(capsys, monkeypatch):
     # No OPENROUTER_API_KEY and no classifier module: both are unavailable.
+    from toolgate_pin.scanner import classifier
+
+    monkeypatch.setattr(classifier, "available", lambda: False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     assert cli.main(["bench", "--split", "dev"]) == 0
     out = capsys.readouterr().out
