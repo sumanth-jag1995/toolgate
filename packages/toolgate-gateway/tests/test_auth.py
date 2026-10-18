@@ -1,6 +1,13 @@
+import asyncio
+
 import httpx
+import jwt
 import pytest
-from toolgate_gateway.auth import ClientCredentialsAuth, DownstreamAuthError
+from toolgate_gateway.auth import (
+    AgentTokenVerifier,
+    ClientCredentialsAuth,
+    DownstreamAuthError,
+)
 
 TOKEN_URL = "http://keycloak.test/token"
 
@@ -41,8 +48,6 @@ async def test_garbage_rejected(verifier):
 
 
 async def test_jwks_failure_never_raises(rsa_key, make_token):
-    from toolgate_gateway.auth import AgentTokenVerifier
-
     class Broken:
         def get_signing_key_from_jwt(self, token):
             raise OSError("jwks down")
@@ -133,8 +138,6 @@ async def test_cc_auth_second_401_returned_as_is():
 
 
 async def test_cc_auth_single_flight():
-    import asyncio
-
     d = Downstream()
     async with make_client(d) as client:
         await asyncio.gather(*(client.get("http://ds.test/x") for _ in range(5)))
@@ -162,3 +165,58 @@ async def test_cc_auth_transport_error_names_type_only():
         with pytest.raises(DownstreamAuthError) as ei:
             await client.get("http://ds.test/x")
     assert str(ei.value) == "ConnectError"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"access_token": "", "expires_in": 300},
+        {"access_token": "t", "expires_in": 0},
+        {"access_token": "t", "expires_in": -5},
+    ],
+)
+async def test_cc_auth_rejects_malformed_token_response(body):
+    d = Downstream(token_body=body)
+    async with make_client(d) as client:
+        with pytest.raises(DownstreamAuthError, match="malformed"):
+            await client.get("http://ds.test/x")
+
+
+async def test_verifier_uses_cached_key_when_jwks_refresh_fails(
+    rsa_key, make_token, monkeypatch
+):
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(rsa_key.public_key(), as_dict=True)
+    jwk.update(kid="test", use="sig", alg="RS256")
+    client = jwt.PyJWKClient("http://keycloak.test/jwks")
+    state = {"down": False}
+
+    def fetch_data():
+        if state["down"]:
+            raise jwt.PyJWKClientConnectionError("jwks down")
+        return {"keys": [jwk]}
+
+    monkeypatch.setattr(client, "fetch_data", fetch_data)
+    v = AgentTokenVerifier(
+        "http://keycloak.test/realms/toolgate",
+        "toolgate-gateway",
+        "http://x",
+        jwk_client=client,
+    )
+
+    assert await v.verify_token(make_token()) is not None
+    state["down"] = (
+        True  # fetch_data is patched, so nothing is cached: every call refetches
+    )
+    assert await v.verify_token(make_token()) is not None
+    unknown = jwt.encode(
+        {
+            "iss": "http://keycloak.test/realms/toolgate",
+            "aud": "toolgate-gateway",
+            "azp": "a",
+            "exp": 4102444800,
+        },
+        rsa_key,
+        algorithm="RS256",
+        headers={"kid": "unknown"},
+    )
+    assert await v.verify_token(unknown) is None

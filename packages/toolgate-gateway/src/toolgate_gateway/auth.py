@@ -31,15 +31,28 @@ class AgentTokenVerifier(TokenVerifier):
     ) -> None:
         self._issuer = issuer
         self._audience = audience
-        # PyJWKClient caches keys, so a failed refresh still verifies with cached ones.
         self._jwk_client = jwk_client or jwt.PyJWKClient(jwks_url)
+        # PyJWKClient drops its JWK-set cache after 300 s, so on its own an IdP outage
+        # would fail every token. Remember the last good key per kid and fall back to
+        # it only when the JWKS fetch itself fails.
+        self._last_good: dict[str, Any] = {}
+
+    def _signing_key(self, token: str) -> Any:
+        kid = jwt.get_unverified_header(token).get("kid")
+        try:
+            key = self._jwk_client.get_signing_key_from_jwt(token)
+        except jwt.PyJWKClientConnectionError:
+            if isinstance(kid, str) and kid in self._last_good:
+                return self._last_good[kid]
+            raise
+        if isinstance(kid, str):
+            self._last_good[kid] = key
+        return key
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
             # JWKS lookup may do blocking HTTP: keep it off the event loop.
-            signing_key = await anyio.to_thread.run_sync(
-                self._jwk_client.get_signing_key_from_jwt, token
-            )
+            signing_key = await anyio.to_thread.run_sync(self._signing_key, token)
             claims = jwt.decode(
                 token,
                 signing_key.key,
@@ -119,6 +132,8 @@ class ClientCredentialsAuth(httpx.Auth):
         try:
             body = resp.json()
             token, expires_in = str(body["access_token"]), float(body["expires_in"])
+            if not token or not expires_in > 0:
+                raise ValueError
         except (ValueError, KeyError, TypeError):
             raise DownstreamAuthError("malformed token response") from None
         self._token = token
