@@ -3,7 +3,7 @@
 Every tools/list fetches fresh tool lists from all downstreams, verifies them
 against the pinned hashes, records drift and unpinned tools as pending
 reviews, rebuilds the snapshot from the allowed tools, and returns the
-caller's allowlisted tools under namespaced names. tools/call (Task 6) only
+caller's allowlisted tools under namespaced names. tools/call only
 consults the snapshot.
 
 The snapshot serves the PINNED definition, never the live one: the pin hash
@@ -19,20 +19,22 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError
-from mcp.types import Tool
-from toolgate_pin import InventoryTool, Pinner, PinSet, Quarantine
+from jsonschema.exceptions import SchemaError, best_match
+from mcp.shared.exceptions import McpError
+from mcp.types import CallToolResult, TextContent, Tool
+from toolgate_pin import InventoryTool, Pinner, PinSet, Quarantine, scan_output
 
-from toolgate_gateway.audit import AuditWriter
-from toolgate_gateway.downstreams import namespaced
+from toolgate_gateway.audit import AuditRecord, AuditWriter, args_hmac
+from toolgate_gateway.downstreams import namespaced, split_namespaced
 from toolgate_gateway.pins import PinSource
 from toolgate_gateway.policy import Allowlist
-from toolgate_gateway.pool import DownstreamPool, ServerInfo
+from toolgate_gateway.pool import DownstreamPool, DownstreamUnavailable, ServerInfo
 from toolgate_gateway.reviews import PendingReviews
 
 log = logging.getLogger(__name__)
@@ -43,6 +45,94 @@ alert_log = logging.getLogger("toolgate_gateway.alert")
 REVIEWS_TIMEOUT_S = 5.0
 
 _REVIEWED = frozenset({"drift", "unpinned", "server_drift"})
+
+# Fixed tool-error texts. They never contain arguments or downstream text.
+_UNKNOWN = "unknown tool"
+_SCOPE = "tool not permitted for this agent"
+_UNPINNED = "tool is not approved; call refused"
+_DRIFT = "tool definition changed since approval; call refused"
+_SCHEMA = "arguments do not match the tool's input schema"
+_AUDIT_DOWN = "audit log unavailable; call refused"
+_DOWNSTREAM_ERROR = "downstream error; call failed"
+_WITHHELD = "tool output withheld by policy"
+
+# A caller-supplied tool name is truncated to this length in audit rows and
+# logs (it is unbounded on the wire; a known name is far shorter).
+MAX_LOGGED_NAME = 256
+
+
+def _unavailable(server_id: str) -> str:
+    # server_id is a configured (validated) id, never caller-supplied text.
+    return f"downstream {server_id} is unavailable; call failed"
+
+
+def _error(message: str) -> CallToolResult:
+    return CallToolResult(
+        content=[TextContent(type="text", text=message)], isError=True
+    )
+
+
+def _schema_failure(validator: Draft202012Validator, args: Any) -> str | None:
+    """None if ``args`` is valid, else a reason naming only the failing
+    schema keyword (never a value or a caller-chosen property name)."""
+    if not isinstance(args, Mapping):
+        return "schema: not an object"
+    try:
+        error = best_match(validator.iter_errors(args))
+    except Exception:  # noqa: BLE001 - cannot validate: fail closed
+        return "schema: validation failed"
+    if error is None:
+        return None
+    return f"schema: {error.validator}"
+
+
+class _Call:
+    """Audit bookkeeping for one tools/call."""
+
+    def __init__(
+        self,
+        core: GatewayCore,
+        client_id: str,
+        agent_id: str,
+        name: str,
+        arguments: Any,
+        start: float,
+    ) -> None:
+        self.core = core
+        self.client_id = client_id
+        self.agent_id = agent_id
+        self.name = name[:MAX_LOGGED_NAME]
+        self.arguments = arguments
+        self.start = start
+        self.tool_hash: str | None = None
+
+    def finish(self, decision: str, reason: str | None) -> None:
+        latency_ms = (time.perf_counter() - self.start) * 1000.0
+        args = self.arguments if isinstance(self.arguments, Mapping) else None
+        if self.arguments is not None and args is None:
+            args = {"<non-object>": type(self.arguments).__name__}
+        rec = AuditRecord(
+            agent_id=self.agent_id,
+            client_id=self.client_id,
+            tool=self.name,
+            tool_hash=self.tool_hash,
+            args_hmac=args_hmac(self.core.hmac_key, args),
+            decision=decision,
+            reason=reason,
+            latency_ms=latency_ms,
+            trace_id=None,  # Task 8 adds tracing
+        )
+        if not self.core.audit.submit(rec):
+            log.warning(
+                "audit drop: row not accepted client=%s tool=%r decision=%s",
+                self.client_id,
+                self.name,
+                decision,
+            )
+
+    def deny(self, decision: str, reason: str | None, message: str) -> CallToolResult:
+        self.finish(decision, reason)
+        return _error(message)
 
 
 @dataclass(frozen=True)
@@ -106,6 +196,106 @@ class GatewayCore:
 
     async def refresh_snapshot(self) -> None:
         await self._refresh()
+
+    async def call_tool(
+        self,
+        client_id: str,
+        agent_id: str,
+        name: str,
+        arguments: dict[str, Any] | None,
+    ) -> CallToolResult:
+        """Check, forward, scan and audit one tools/call. Fails closed: the
+        first failing check returns a fixed error (never echoing arguments)
+        and is audited; the downstream is called only if every check passes
+        and the audit log can take the row."""
+        start = time.perf_counter()
+        call = _Call(self, client_id, agent_id, name, arguments, start)
+
+        # 1. namespace and known server
+        parts = split_namespaced(name)
+        if (
+            parts is None
+            or not parts[0]
+            or not parts[1]
+            or parts[0] not in self.pool.server_ids
+        ):
+            return call.deny("deny_unknown_tool", None, _UNKNOWN)
+        server_id, tool_name = parts
+
+        # 2. allowlist
+        if not self.allowlist.allowed(client_id, name):
+            return call.deny("deny_scope", None, _SCOPE)
+
+        # 3. pins and snapshot. Stale/corrupt pins bound calls as well.
+        entry = self.snapshot.get(name)
+        call.tool_hash = entry.tool_hash if entry is not None else None
+        state = self.pins.state()
+        if state is None:
+            return call.deny("deny_unpinned", "pins unavailable", _UNPINNED)
+        sp = state[0].get(server_id)
+        pin = sp.tools.get(tool_name) if sp is not None else None
+        if pin is None:
+            return call.deny("deny_unpinned", None, _UNPINNED)
+        if entry is None:
+            if server_id not in self.inventory:
+                # Down at the last refresh: its tools were omitted, which is
+                # not drift. Nothing is forwarded.
+                return call.deny(
+                    "error_downstream", "not listed (down)", _unavailable(server_id)
+                )
+            return call.deny("deny_drift", "not in verified snapshot", _DRIFT)
+        if pin.hash != entry.tool_hash:
+            return call.deny("deny_drift", "pin changed since snapshot", _DRIFT)
+
+        # 4. argument schema (the pinned inputSchema)
+        args: Any = {} if arguments is None else arguments
+        schema_failure = _schema_failure(entry.input_validator, args)
+        if schema_failure is not None:
+            return call.deny("deny_schema", schema_failure, _SCHEMA)
+
+        # 5. the audit log must be able to take the row before forwarding
+        if not self.audit.accepting:
+            log.warning(
+                "audit log unavailable; refused call client=%s tool=%r",
+                client_id,
+                call.name,
+            )
+            return _error(_AUDIT_DOWN)
+
+        # 6. forward with the gateway's own credentials
+        try:
+            result = await self.pool.call_tool(server_id, tool_name, args)
+        except asyncio.CancelledError:
+            call.finish("error_downstream", "cancelled")
+            raise
+        except DownstreamUnavailable:
+            return call.deny("error_downstream", "unavailable", _unavailable(server_id))
+        except McpError:
+            return call.deny("error_downstream", "jsonrpc_error", _DOWNSTREAM_ERROR)
+        except Exception as exc:  # noqa: BLE001 - any failure is a tool error
+            log.warning(
+                "tools/call %r on %s failed (%s)",
+                call.name,
+                server_id,
+                type(exc).__name__,
+            )
+            return call.deny("error_downstream", type(exc).__name__, _DOWNSTREAM_ERROR)
+
+        # 7. scan the output
+        inventory = [t for tools in self.inventory.values() for t in tools]
+        try:
+            report = scan_output(result, server_id=server_id, inventory=inventory)
+        except Exception as exc:  # noqa: BLE001 - cannot scan: withhold
+            log.warning("output scan of %r failed (%s)", call.name, type(exc).__name__)
+            return call.deny("deny_output", "scan_failed", _WITHHELD)
+        rules = ",".join(sorted({f.rule_id for f in report.findings})) or None
+        if report.verdict == "malicious":
+            return call.deny("deny_output", rules, _WITHHELD)
+        if report.verdict == "suspicious":
+            call.finish("flag_output", rules)
+        else:
+            call.finish("allow", None)
+        return result
 
     # -- refresh -----------------------------------------------------------
 

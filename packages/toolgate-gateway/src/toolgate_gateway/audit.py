@@ -83,6 +83,12 @@ class AuditWriter:
     def healthy(self) -> bool:
         return self._healthy
 
+    @property
+    def accepting(self) -> bool:
+        """Whether ``submit`` would accept a row now: open, healthy and the
+        queue not full. Checked before forwarding a call (fail closed)."""
+        return not self._closed and self._healthy and not self._queue.full()
+
     async def start(self) -> None:
         if self._task is None:
             self._closed = False

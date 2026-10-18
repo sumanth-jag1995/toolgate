@@ -111,9 +111,19 @@ async def test_decision_check_constraint(app_pool):
 
 async def test_queue_full_returns_false():
     writer = AuditWriter(None, max_queue=2)  # type: ignore[arg-type]
+    assert writer.accepting
     assert writer.submit(_rec(1))
     assert writer.submit(_rec(2))
+    assert not writer.accepting
     assert writer.submit(_rec(3)) is False
+
+
+async def test_accepting_false_when_stopped():
+    w = AuditWriter(FakePool())
+    await w.start()
+    assert w.accepting
+    await w.stop()
+    assert not w.accepting
 
 
 async def test_db_down_marks_unhealthy():
