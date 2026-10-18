@@ -7,7 +7,9 @@ repos:
     rev: v0.17.1
     hooks:
       - id: ruff
+        types_or: [python, pyi]
       - id: ruff-format
+        types_or: [python, pyi]
   - repo: local
     hooks:
       - id: forbid-secret-files
