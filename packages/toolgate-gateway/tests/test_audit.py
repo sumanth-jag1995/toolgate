@@ -145,6 +145,12 @@ async def test_db_down_marks_unhealthy():
             await asyncio.sleep(0.1)
         assert writer.healthy is False
         assert writer.submit(_rec(3)) is False
+        # Unhealthy after the first failed attempt; the batch is counted as
+        # dropped only after the retry also fails.
+        for _ in range(100):
+            if writer.dropped_count >= 1:
+                break
+            await asyncio.sleep(0.1)
         assert writer.dropped_count >= 1
         pool.terminate()
         await writer.stop()
