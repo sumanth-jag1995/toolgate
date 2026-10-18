@@ -62,7 +62,8 @@ def test_demo_on_cp1252_stdout(monkeypatch):
 
 
 async def _tools(mutated: bool):
-    async with in_memory_session(build_demo_server(mutated=mutated)) as s:
+    async with in_memory_session(build_demo_server(mutated=mutated)) as (s, init):
+        assert init.serverInfo.name == "insurer-demo"
         return {t.name: t for t in (await s.list_tools()).tools}
 
 

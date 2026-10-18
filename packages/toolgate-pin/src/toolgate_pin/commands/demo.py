@@ -14,26 +14,22 @@ from toolgate_pin.demo_server import build_demo_server
 from toolgate_pin.models import PinSet, Target
 from toolgate_pin.pinner import Pinner
 from toolgate_pin.pinning import pin_server
-from toolgate_pin.reveal import decode_tag_text, safe_print, stream_can_encode
+from toolgate_pin.reveal import (
+    ascii_brackets,
+    decode_tag_text,
+    safe_print,
+    stream_can_encode,
+)
 from toolgate_pin.store import InMemoryStore
 
 SERVER_ID = "insurer-demo"
 
 
 async def _list(mutated: bool) -> tuple[list[mcp.types.Tool], Any]:
-    async with in_memory_session(build_demo_server(mutated=mutated)) as session:
-        # The helper already initialized once; repeating it returns serverInfo.
-        init = (await session.initialize()).serverInfo
+    server = build_demo_server(mutated=mutated)
+    async with in_memory_session(server) as (session, init):
         tools = (await session.list_tools()).tools
-        return tools, init
-
-
-def _ascii_brackets(text: str, out: TextIO) -> str:
-    """diff() marks hidden characters with unicode brackets; use ASCII ones if
-    the stream cannot encode them."""
-    if stream_can_encode(out, "⟦⟧"):
-        return text
-    return text.replace("⟦", "[[").replace("⟧", "]]")
+        return tools, init.serverInfo
 
 
 def run(no_fail: bool, out: TextIO | None = None) -> int:
@@ -80,7 +76,7 @@ def _run(no_fail: bool, out: TextIO) -> int:
     by_name = {t.name: t for t in mutated_tools}
     for q in result.quarantined:
         emit(paint(f"{bad} quarantined {q.tool_name} ({q.reason})", "31"))
-        emit(_ascii_brackets(q.diff, out))
+        emit(ascii_brackets(q.diff, out))
         tool = by_name.get(q.tool_name)
         hidden = decode_tag_text(tool.description or "") if tool else None
         if hidden:

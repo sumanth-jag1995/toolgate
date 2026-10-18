@@ -50,6 +50,14 @@ def stream_can_encode(stream: TextIO, text: str) -> bool:
     return _can_encode(text, getattr(stream, "encoding", None) or "utf-8")
 
 
+def ascii_brackets(text: str, out: TextIO) -> str:
+    """diff() marks hidden characters with unicode brackets; use ASCII ones if
+    ``out`` cannot encode them."""
+    if stream_can_encode(out, "⟦⟧"):
+        return text
+    return text.replace("⟦", "[[").replace("⟧", "]]")
+
+
 def safe_print(text: str, file: TextIO | None = None) -> None:
     out = file if file is not None else sys.stdout
     encoding = getattr(out, "encoding", None) or "utf-8"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from toolgate_pin.models import Target
 from toolgate_pin.pinning import pin_server
 
@@ -43,5 +44,16 @@ def test_repin_keeps_unchanged_and_updates_changed():
 def test_initial_pin_summary():
     sp = pin_server("s", "srv", TARGET, [_tool("a", "alpha")], approved_by="me")
     tp = sp.tools["a"]
-    assert tp.approved_by == "me" and tp.approved_at.endswith("Z")
+    assert tp.approved_by == "me" and tp.approved_at.endswith("+00:00")
     assert tp.scan["verdict"] == "benign" and tp.scan["rule_ids"] == []
+
+
+def test_duplicate_names_refused():
+    with pytest.raises(ValueError, match="lookup"):
+        pin_server(
+            "s",
+            "srv",
+            TARGET,
+            [_tool("lookup", "a"), _tool("lookup", "b")],
+            approved_by="me",
+        )

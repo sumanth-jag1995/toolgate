@@ -1,0 +1,410 @@
+from __future__ import annotations
+
+import json
+import socket
+import subprocess
+import sys
+import textwrap
+import threading
+import time
+
+import pytest
+from toolgate_pin import cli
+from toolgate_pin.models import PinSet, ServerPin, Target
+from toolgate_pin.store import LockfileStore
+
+DEMO = [sys.executable, "-m", "toolgate_pin.cli", "demo-server"]
+SECRET = "s3cr3t-value"
+
+
+def _run(capsys, *argv: str) -> tuple[int, str]:
+    code = cli.main(list(argv))
+    cap = capsys.readouterr()
+    return code, cap.out + cap.err
+
+
+def _approve(lock, *extra: str, cmd=DEMO) -> int:
+    return cli.main(
+        ["approve", "--lockfile", str(lock), "--yes", "--as", "tester", *extra]
+        + ["--stdio", "--", *cmd]
+    )
+
+
+def _tools(lock) -> dict:
+    return json.loads(lock.read_text(encoding="utf-8"))["servers"]["insurer-demo"][
+        "tools"
+    ]
+
+
+def test_approve_then_check_clean_stdio(tmp_path, capsys):
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock) == 0
+    tools = _tools(lock)
+    assert len(tools) == 4
+    assert {t["approved_by"] for t in tools.values()} == {"tester"}
+    assert all("+00:00" in t["approved_at"] for t in tools.values())
+    capsys.readouterr()
+    code, out = _run(capsys, "check", "--lockfile", str(lock), "--stdio", "--", *DEMO)
+    assert code == 0, out
+
+
+def test_check_detects_mutation_stdio(tmp_path, capsys):
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock) == 0
+    capsys.readouterr()
+    code, out = _run(
+        capsys,
+        "check",
+        "--lockfile",
+        str(lock),
+        "--name",
+        "insurer-demo",
+        "--stdio",
+        "--",
+        *DEMO,
+        "--mutated",
+    )
+    assert code == 1
+    assert "drift" in out
+    assert "⟦U+E0042" in out
+
+
+def test_bare_check_uses_lockfile_targets(tmp_path, capsys):
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock) == 0
+    capsys.readouterr()
+    code, out = _run(capsys, "check", "--lockfile", str(lock))
+    assert code == 0, out
+    assert "insurer-demo" in out
+
+
+def test_bare_check_empty_lockfile_exit_2(tmp_path, capsys):
+    code, out = _run(capsys, "check", "--lockfile", str(tmp_path / "missing.json"))
+    assert code == 2
+    assert "approve" in out
+
+
+def test_target_change_is_not_drift(tmp_path, capsys):
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock) == 0
+    capsys.readouterr()
+    other = [sys.executable, "-X", "utf8", "-m", "toolgate_pin.cli", "demo-server"]
+    code, out = _run(capsys, "check", "--lockfile", str(lock), "--stdio", "--", *other)
+    assert code == 0, out
+
+
+def test_approve_blocked_exit_3(tmp_path, capsys):
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock, cmd=[*DEMO, "--mutated"]) == 3
+    assert not lock.exists()
+    out = capsys.readouterr()
+    assert "TG-UNI-001" in out.out + out.err
+    assert "--override" in out.out + out.err
+
+
+def test_approve_override_records_reason(tmp_path):
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock, "--override", "demo test", cmd=[*DEMO, "--mutated"]) == 0
+    tools = _tools(lock)
+    reason = tools["get_claim_status"]["override_reason"]
+    assert reason.startswith("demo test")
+    assert reason == "demo test [tiers: rules]"
+    assert tools["check_coverage"]["override_reason"] is None
+
+
+def test_reapprove_keeps_unchanged_approvals(tmp_path):
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock) == 0
+    first = _tools(lock)
+    assert (
+        cli.main(
+            ["approve", "--lockfile", str(lock), "--yes", "--as", "second"]
+            + ["--override", "accepted", "--stdio", "--", *DEMO, "--mutated"]
+        )
+        == 0
+    )
+    second = _tools(lock)
+    assert second["check_coverage"] == first["check_coverage"]
+    assert second["get_claim_status"]["approved_by"] == "second"
+    assert second["get_claim_status"]["hash"] != first["get_claim_status"]["hash"]
+
+
+def test_approve_unavailable_tiers_reported(tmp_path, capsys):
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock, "--judge", "--classifier") == 0
+    out = capsys.readouterr()
+    assert "unavailable" in out.out + out.err
+    tools = _tools(lock)
+    assert all(t["scan"]["tiers"] == ["rules"] for t in tools.values())
+
+
+def test_approve_non_tty_without_yes_exit_2(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+    lock = tmp_path / "toolgate.lock.json"
+    code, out = _run(
+        capsys,
+        "approve",
+        "--lockfile",
+        str(lock),
+        "--as",
+        "tester",
+        "--stdio",
+        "--",
+        *DEMO,
+    )
+    assert code == 2
+    assert "--yes" in out
+    assert not lock.exists()
+
+
+def test_approve_without_approver_exit_2(tmp_path, capsys, monkeypatch):
+    def no_git(*a, **k):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr("toolgate_pin.commands.approve.subprocess.run", no_git)
+    lock = tmp_path / "toolgate.lock.json"
+    code, out = _run(
+        capsys, "approve", "--lockfile", str(lock), "--yes", "--stdio", "--", *DEMO
+    )
+    assert code == 2
+    assert "--as" in out
+
+
+def test_approve_refuses_duplicate_tool_names(tmp_path, capsys):
+    script = tmp_path / "dupes_server.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import anyio
+            import mcp.types as t
+            from mcp.server.lowlevel import Server
+            from mcp.server.stdio import stdio_server
+
+            srv = Server("dupes")
+
+            @srv.list_tools()
+            async def _tools():
+                schema = {"type": "object"}
+                return [
+                    t.Tool(name="lookup", description="a", inputSchema=schema),
+                    t.Tool(name="lookup", description="b", inputSchema=schema),
+                ]
+
+            async def main():
+                async with stdio_server() as (r, w):
+                    await srv.run(r, w, srv.create_initialization_options())
+
+            anyio.run(main)
+            """
+        ),
+        encoding="utf-8",
+    )
+    lock = tmp_path / "toolgate.lock.json"
+    code = _approve(lock, cmd=[sys.executable, str(script)])
+    out = capsys.readouterr()
+    assert code == 2
+    assert "lookup" in out.out + out.err
+    assert not lock.exists()
+
+
+def test_literal_header_refused(tmp_path, capsys):
+    lock = tmp_path / "toolgate.lock.json"
+    code, out = _run(
+        capsys,
+        "approve",
+        "http://127.0.0.1:9/mcp",
+        "--header",
+        "Authorization: Bearer abc123",
+        "--lockfile",
+        str(lock),
+        "--yes",
+        "--as",
+        "tester",
+    )
+    assert code == 2
+    assert "abc123" not in out
+    assert "${" in out
+    assert not lock.exists()
+
+
+def _http_lock(lock, url: str, sid: str = "remote") -> None:
+    sp = ServerPin(
+        server_id=sid,
+        server_name="insurer-demo",
+        target=Target(url=url, headers=("Authorization: Bearer ${TG_TOKEN}",)),
+        tools={},
+    )
+    LockfileStore(lock).save(PinSet({}).with_server(sp))
+
+
+def test_missing_env_var_exit_2(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("TG_TOKEN", raising=False)
+    lock = tmp_path / "toolgate.lock.json"
+    _http_lock(lock, "http://127.0.0.1:9/mcp")
+    code, out = _run(capsys, "check", "--lockfile", str(lock))
+    assert code == 2
+    assert "TG_TOKEN" in out
+
+
+def test_one_server_error_others_still_checked(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("TG_TOKEN", raising=False)
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock) == 0
+    store = LockfileStore(lock)
+    sp = ServerPin(
+        server_id="remote",
+        server_name="insurer-demo",
+        target=Target(
+            url="http://127.0.0.1:9/mcp",
+            headers=("Authorization: Bearer ${TG_TOKEN}",),
+        ),
+        tools={},
+    )
+    store.save(store.load().with_server(sp))
+    capsys.readouterr()
+    code, out = _run(capsys, "check", "--lockfile", str(lock), "--format", "json")
+    assert code == 2
+    report = json.loads(out)
+    assert report["ok"] is False
+    by_id = {s["server_id"]: s for s in report["servers"]}
+    assert by_id["insurer-demo"]["error"] is None
+    assert by_id["insurer-demo"]["quarantined"] == []
+    assert "TG_TOKEN" in by_id["remote"]["error"]
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+def http_demo():
+    """The demo server over streamable HTTP; requests without the token get 401."""
+    import uvicorn
+    from toolgate_pin.demo_server import build_demo_server
+
+    inner = build_demo_server().streamable_http_app()
+    seen: list[str] = []
+
+    async def app(scope, receive, send):
+        if scope["type"] == "http":
+            auth = dict(scope["headers"]).get(b"authorization", b"").decode()
+            seen.append(auth)
+            if auth != f"Bearer {SECRET}":
+                await send(
+                    {"type": "http.response.start", "status": 401, "headers": []}
+                )
+                await send({"type": "http.response.body", "body": b"unauthorized"})
+                return
+        await inner(scope, receive, send)
+
+    port = _free_port()
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        assert time.monotonic() < deadline, "uvicorn did not start"
+        time.sleep(0.05)
+    try:
+        yield f"http://127.0.0.1:{port}/mcp", seen
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
+def test_header_value_never_written(tmp_path, capsys, monkeypatch, http_demo):
+    url, seen = http_demo
+    monkeypatch.setenv("TG_TOKEN", SECRET)
+    lock = tmp_path / "toolgate.lock.json"
+    code, out = _run(
+        capsys,
+        "approve",
+        url,
+        "--header",
+        "Authorization: Bearer ${TG_TOKEN}",
+        "--lockfile",
+        str(lock),
+        "--yes",
+        "--as",
+        "tester",
+    )
+    assert code == 0, out
+    text = lock.read_text(encoding="utf-8")
+    assert "${TG_TOKEN}" in text
+    assert SECRET not in text
+    assert SECRET not in out
+    assert seen and all(a == f"Bearer {SECRET}" for a in seen)
+
+    code, out = _run(capsys, "check", "--lockfile", str(lock))
+    assert code == 0, out
+    assert SECRET not in out
+
+
+def test_http_connect_error_exit_2(tmp_path, capsys, monkeypatch, http_demo):
+    url, _ = http_demo
+    monkeypatch.setenv("TG_TOKEN", "wrong-token-value")
+    lock = tmp_path / "toolgate.lock.json"
+    code, out = _run(
+        capsys,
+        "approve",
+        url,
+        "--header",
+        "Authorization: Bearer ${TG_TOKEN}",
+        "--lockfile",
+        str(lock),
+        "--yes",
+        "--as",
+        "tester",
+    )
+    assert code == 2
+    assert "127.0.0.1" in out
+    assert "wrong-token-value" not in out
+    assert not lock.exists()
+
+
+def test_corrupt_lockfile_exit_2(tmp_path, capsys):
+    lock = tmp_path / "toolgate.lock.json"
+    lock.write_text("{not json", encoding="utf-8")
+    code = cli.main(["check", "--lockfile", str(lock)])
+    cap = capsys.readouterr()
+    assert code == 2
+    assert cap.out == ""
+    lines = cap.err.strip().splitlines()
+    assert len(lines) == 1
+    assert "toolgate.lock.json" in lines[0]
+
+
+def test_json_format(tmp_path, capsys):
+    lock = tmp_path / "toolgate.lock.json"
+    assert _approve(lock) == 0
+    capsys.readouterr()
+    code = cli.main(
+        ["check", "--lockfile", str(lock), "--format", "json", "--name"]
+        + ["insurer-demo", "--stdio", "--", *DEMO, "--mutated"]
+    )
+    out = capsys.readouterr().out
+    assert code == 1
+    report = json.loads(out)
+    assert report["ok"] is False
+    [server] = report["servers"]
+    assert server["server_id"] == "insurer-demo" and server["error"] is None
+    [q] = server["quarantined"]
+    assert q["reason"] == "drift" and q["tool_name"] == "get_claim_status"
+    assert set(q) == {"tool_name", "reason", "observed_hash", "pinned_hash", "diff"}
+
+
+def test_module_entry_point_runs_demo_server():
+    # `python -m toolgate_pin.cli` must reach main() (stdio tests rely on it).
+    proc = subprocess.run(
+        [sys.executable, "-m", "toolgate_pin.cli", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0
+    assert "approve" in proc.stdout and "check" in proc.stdout
