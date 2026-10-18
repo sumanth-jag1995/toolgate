@@ -26,7 +26,17 @@ def as_definition(tool: mcp.types.Tool | Mapping[str, Any]) -> dict[str, Any]:
         raw: Mapping[str, Any] = tool.model_dump(by_alias=True, exclude_none=True)
     else:
         raw = tool
-    return {k: raw[k] for k in HASHED_FIELDS if raw.get(k) is not None}
+    return {k: _drop_none(raw[k]) for k in HASHED_FIELDS if raw.get(k) is not None}
+
+
+def _drop_none(node: Any) -> Any:
+    # Mirrors model_dump(exclude_none=True): None-valued mapping entries vanish
+    # at any depth, so Tool objects and plain dicts hash identically.
+    if isinstance(node, Mapping):
+        return {k: _drop_none(v) for k, v in node.items() if v is not None}
+    if isinstance(node, (list, tuple)):
+        return [_drop_none(x) for x in node]
+    return node
 
 
 def _norm_str(value: str) -> str:
@@ -52,7 +62,6 @@ def _normalize(node: Any) -> Any:
     if isinstance(node, Mapping):
         result: dict[str, Any] = {}
         for key, val in node.items():
-            norm_key = _norm_str(key) if isinstance(key, str) else key
             norm_val = _normalize(val)
             if (
                 key == "required"
@@ -60,7 +69,7 @@ def _normalize(node: Any) -> Any:
                 and all(isinstance(x, str) for x in norm_val)
             ):
                 norm_val = sorted(norm_val)
-            result[norm_key] = norm_val
+            result[key] = norm_val
         return result
     if isinstance(node, (list, tuple)):
         return [_normalize(x) for x in node]

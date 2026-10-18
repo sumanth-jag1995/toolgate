@@ -74,3 +74,26 @@ def test_tool_object_and_dict_hash_equal():  # Review Focus 1
 
 def test_hash_format():
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", pin_hash(BASE))
+
+
+def test_property_keys_kept_verbatim():
+    def with_props(props):
+        return {**BASE, "inputSchema": {"type": "object", "properties": props}}
+
+    one = with_props({"a b": {"type": "string"}})
+    two = with_props({"a b": {"type": "string"}, "a  b": {"type": "integer"}})
+    assert pin_hash(one) != pin_hash(two)
+    nfc = with_props({"caf\u00e9": {"type": "string"}})
+    nfd = with_props({"cafe\u0301": {"type": "string"}})
+    assert pin_hash(nfc) != pin_hash(nfd)
+
+
+def test_nested_none_dropped_tool_and_dict_equal():
+    ann = {"readOnlyHint": True, "title": None}
+    tool = mcp.types.Tool(
+        name=BASE["name"],
+        description=BASE["description"],
+        inputSchema=BASE["inputSchema"],
+        annotations=mcp.types.ToolAnnotations(readOnlyHint=True),
+    )
+    assert pin_hash({**BASE, "annotations": ann}) == pin_hash(tool)
