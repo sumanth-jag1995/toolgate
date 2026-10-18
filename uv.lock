@@ -12,6 +12,7 @@ resolution-markers = [
 members = [
     "mock-enterprise",
     "toolgate",
+    "toolgate-gateway",
     "toolgate-mcp-servers",
     "toolgate-pin",
 ]
@@ -1667,6 +1668,23 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
     { name = "testcontainers", extras = ["postgres"] },
+]
+
+[[package]]
+name = "toolgate-gateway"
+version = "0.1.0"
+source = { editable = "packages/toolgate-gateway" }
+dependencies = [
+    { name = "pydantic-settings" },
+    { name = "pyyaml" },
+    { name = "toolgate-pin" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic-settings", specifier = ">=2.4" },
+    { name = "pyyaml", specifier = ">=6" },
+    { name = "toolgate-pin", editable = "packages/toolgate-pin" },
 ]
 
 [[package]]

@@ -1,0 +1,4 @@
+agents:
+  servicing: ["core-read.*", "comms.*", "core-write.add_claim_note", "core-write.update_contact_preference"]
+  claims-intake: ["core-read.get_member_profile", "core-read.get_policy_details", "core-read.check_coverage", "core-read.get_claim_status", "core-write.log_claim", "core-write.add_claim_note", "comms.send_member_message"]
+  fraud-triage: ["core-read.*"]

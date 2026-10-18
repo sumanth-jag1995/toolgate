@@ -1,0 +1,7 @@
+downstreams:
+  - server_id: core-read
+    url: http://core-read:8101/mcp
+  - server_id: core-write
+    url: http://core-write:8102/mcp
+  - server_id: comms
+    url: http://comms:8103/mcp
