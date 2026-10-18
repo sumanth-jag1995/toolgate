@@ -12,7 +12,10 @@ JSON files live under this package:
 * dev split:  ``dev/malicious/*.json`` and ``dev/benign/*.json``
 
 Each malicious file is a :class:`MaliciousVariant`; each benign file is a
-:class:`BenignDefinition`. The split is read from the directory, never guessed.
+:class:`BenignDefinition`. Each file declares its own ``split``; ``load_corpus``
+selects the directory for the requested split and cross-checks every file's
+``split``, ``family`` (against its ``malicious/<family>/`` directory) and ``id``
+(against its filename) so a misfiled variant fails loudly.
 """
 
 from __future__ import annotations
@@ -145,37 +148,69 @@ class Corpus(BaseModel):
     benign: list[BenignDefinition] = Field(default_factory=list)
 
 
-def _iter_json(node: Any) -> list[Any]:
-    found: list[Any] = []
+#: Immediate-parent directory names that are a family partition, not a container.
+_FAMILY_DIRS = frozenset(
+    ("description_poisoning", "rug_pull", "shadowing", "unicode_schema")
+)
+
+
+def _iter_json(node: Any, parent_name: str = "") -> list[tuple[str, Any]]:
+    """Every ``*.json`` under ``node`` paired with its immediate parent dir name."""
+    found: list[tuple[str, Any]] = []
     for child in node.iterdir():
         if child.is_dir():
-            found.extend(_iter_json(child))
+            found.extend(_iter_json(child, child.name))
         elif child.name.endswith(".json"):
-            found.append(child)
+            found.append((parent_name, child))
     return found
 
 
 def load_corpus(split: Split = "test") -> Corpus:
-    """Load every malicious and benign definition for ``split`` from package data."""
-    root = importlib.resources.files("toolgate_pin.corpus")
+    """Load every malicious and benign definition for ``split`` from package data.
+
+    Raises ``FileNotFoundError`` if the malicious directory is missing (a broken
+    package), and ``ValueError`` if any file is misfiled: its ``split`` must match
+    the requested split, its ``id`` must match its filename stem, and — when it
+    sits in a ``malicious/<family>/`` directory — its ``family`` must match that
+    directory. A missing benign directory is tolerated (Task 8 writes those).
+    """
+    return _load_corpus(importlib.resources.files("toolgate_pin.corpus"), split)
+
+
+def _load_corpus(root: Any, split: Split) -> Corpus:
+    """Load from an arbitrary corpus root (``importlib.resources`` or ``Path``)."""
     if split == "test":
         mal_dir, ben_dir = root / "malicious", root / "benign"
     else:
         mal_dir, ben_dir = root / "dev" / "malicious", root / "dev" / "benign"
 
+    if not mal_dir.is_dir():
+        raise FileNotFoundError(
+            f"corpus is missing its malicious directory for split {split!r}"
+        )
+
     malicious: list[MaliciousVariant] = []
-    if mal_dir.is_dir():
-        for f in sorted(_iter_json(mal_dir), key=lambda p: p.name):
-            malicious.append(
-                MaliciousVariant.model_validate_json(f.read_text(encoding="utf-8"))
-            )
+    for parent, f in sorted(_iter_json(mal_dir), key=lambda p: p[1].name):
+        v = MaliciousVariant.model_validate_json(f.read_text(encoding="utf-8"))
+        stem = f.name[: -len(".json")]
+        if v.split != split:
+            raise ValueError(f"{f.name}: split {v.split!r} in {split!r} directory")
+        if v.id != stem:
+            raise ValueError(f"{f.name}: id {v.id!r} does not match filename")
+        if parent in _FAMILY_DIRS and v.family != parent:
+            raise ValueError(f"{f.name}: family {v.family!r} in {parent!r} directory")
+        malicious.append(v)
 
     benign: list[BenignDefinition] = []
     if ben_dir.is_dir():
-        for f in sorted(_iter_json(ben_dir), key=lambda p: p.name):
-            benign.append(
-                BenignDefinition.model_validate_json(f.read_text(encoding="utf-8"))
-            )
+        for _parent, f in sorted(_iter_json(ben_dir), key=lambda p: p[1].name):
+            b = BenignDefinition.model_validate_json(f.read_text(encoding="utf-8"))
+            stem = f.name[: -len(".json")]
+            if b.split != split:
+                raise ValueError(f"{f.name}: split {b.split!r} in {split!r} directory")
+            if b.id != stem:
+                raise ValueError(f"{f.name}: id {b.id!r} does not match filename")
+            benign.append(b)
 
     malicious.sort(key=lambda v: v.id)
     benign.sort(key=lambda v: v.id)

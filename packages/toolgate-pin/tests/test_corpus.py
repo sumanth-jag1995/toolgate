@@ -144,5 +144,63 @@ def test_ids_well_formed():
     assert {v.id for v in DEV.malicious} == {f"dv-m-{i:02d}" for i in range(1, 9)}
 
 
+def _write(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _sample_variant(vid="dp-01"):
+    v = next(x for x in TEST.malicious if x.id == vid)
+    return v.model_dump(mode="json")
+
+
+def test_missing_malicious_dir_raises(tmp_path):
+    from toolgate_pin.corpus import _load_corpus
+
+    # empty root: no malicious/ directory at all
+    with pytest.raises(FileNotFoundError):
+        _load_corpus(tmp_path, "test")
+
+
+def test_missing_benign_dir_tolerated(tmp_path):
+    from toolgate_pin.corpus import _load_corpus
+
+    _write(
+        tmp_path / "malicious" / "description_poisoning" / "dp-01.json",
+        _sample_variant("dp-01"),
+    )
+    corpus = _load_corpus(tmp_path, "test")  # no benign/ dir
+    assert [v.id for v in corpus.malicious] == ["dp-01"]
+    assert corpus.benign == []
+
+
+def test_family_must_match_directory(tmp_path):
+    from toolgate_pin.corpus import _load_corpus
+
+    data = _sample_variant("dp-01")
+    # a description_poisoning variant filed under the rug_pull directory
+    _write(tmp_path / "malicious" / "rug_pull" / "dp-01.json", data)
+    with pytest.raises(ValueError, match="family"):
+        _load_corpus(tmp_path, "test")
+
+
+def test_id_must_match_filename(tmp_path):
+    from toolgate_pin.corpus import _load_corpus
+
+    data = _sample_variant("dp-01")
+    _write(tmp_path / "malicious" / "description_poisoning" / "wrong-name.json", data)
+    with pytest.raises(ValueError, match="filename"):
+        _load_corpus(tmp_path, "test")
+
+
+def test_split_must_match_requested(tmp_path):
+    from toolgate_pin.corpus import _load_corpus
+
+    data = _sample_variant("dp-01")  # split == "test"
+    _write(tmp_path / "dev" / "malicious" / "dp-01.json", data)
+    with pytest.raises(ValueError, match="split"):
+        _load_corpus(tmp_path, "dev")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-q"])
