@@ -48,7 +48,10 @@ def _tier_objects(tiers: tuple[str, ...], no_cache: bool) -> tuple[Any, Any]:
 def run(*, split: str, tiers: str | None, fmt: str, no_cache: bool) -> int:
     """Always exits 0: bench reports, it never gates."""
     if tiers is None:
-        chosen = auto_tiers()
+        # Auto mode builds scorers for the tiers available here but requests
+        # every tier, so the ones that cannot run are listed as unavailable.
+        available = auto_tiers()
+        chosen = TIERS
     else:
         chosen = tuple(t.strip() for t in tiers.split(",") if t.strip())
         unknown = [t for t in chosen if t not in TIERS]
@@ -59,12 +62,26 @@ def run(*, split: str, tiers: str | None, fmt: str, no_cache: bool) -> int:
                 file=sys.stderr,
             )
             chosen = tuple(t for t in chosen if t in TIERS)
-    classifier, judge = _tier_objects(chosen, no_cache)
+        available = chosen
+    classifier, judge = _tier_objects(available, no_cache)
     result = run_bench(
         split=split,  # type: ignore[arg-type]
         tiers=chosen,
         judge=judge,
         classifier=classifier,
     )
+    if fmt in ("md", "json"):
+        _utf8_when_redirected(sys.stdout)
     safe_print(render(result, fmt))  # type: ignore[arg-type]
     return 0
+
+
+def _utf8_when_redirected(stream: Any) -> None:
+    """md/json are files for READMEs and tools: write UTF-8 when redirected,
+    whatever the console code page (a TTY keeps safe_print's fallback)."""
+    try:
+        if stream.isatty():
+            return
+        stream.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError, ValueError):
+        pass  # not a TextIOWrapper (e.g. a test capture): leave it alone

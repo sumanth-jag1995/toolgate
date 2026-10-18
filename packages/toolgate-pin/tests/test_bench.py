@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 
 from toolgate_pin import cli
 from toolgate_pin.bench import render, run_bench
@@ -33,6 +36,41 @@ def test_unavailable_tier_named():
 
 def test_cli_bench_exit_0(capsys):
     assert cli.main(["bench", "--tiers", "rules"]) == 0
+
+
+def test_cli_auto_mode_lists_unrun_tiers(capsys, monkeypatch):
+    # No OPENROUTER_API_KEY and no classifier module: both are unavailable.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert cli.main(["bench", "--split", "dev"]) == 0
+    out = capsys.readouterr().out
+    assert "tiers: rules; unavailable: classifier, judge" in out
+
+
+def _redirected_bench(fmt: str) -> str:
+    # Simulate a Windows cp1252 code page on stdout, redirected to a pipe.
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("PYTHONUTF8", "PYTHONIOENCODING")
+    }
+    env["PYTHONIOENCODING"] = "cp1252"
+    proc = subprocess.run(
+        [sys.executable, "-m", "toolgate_pin.cli", "bench", "--split", "dev"]
+        + ["--tiers", "rules", "--format", fmt],
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+    return proc.stdout.decode("utf-8")  # raises if cp1252 byte 0x97 slipped in
+
+
+def test_redirected_md_output_is_utf8():
+    out = _redirected_bench("md")
+    assert "| — |" in out and "toolgate-pin bench — tiers: rules" in out
+
+
+def test_redirected_json_output_is_utf8():
+    assert json.loads(_redirected_bench("json"))["split"] == "dev"
 
 
 def test_json_format_parses():

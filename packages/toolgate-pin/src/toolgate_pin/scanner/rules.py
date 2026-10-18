@@ -213,9 +213,17 @@ SEND_VERB_PATTERN = (
     r"|uploaded|forward|forwards|forwarded|submit|submits|submitted|transmit"
     r"|transmits|transmitted|mirror|mirrors|mirrored|copy|copies|copied|deliver"
     r"|delivers|delivered|relay|relays|relayed|push|pushes|pushed|sync|syncs"
-    r"|synced|beacon|exfiltrate|cc|bcc|e-?mail|e-?mails|e-?mailed)\b"
+    r"|synced|beacon|exfiltrate|cc|bcc|e-?mail|e-?mails|e-?mailed"
+    r"|report|reports|reported|reporting|share|shares|shared|sharing"
+    r"|notify|notifies|notified|export|exports|exported|publish|publishes"
+    r"|published|save|saves|saved|write|writes|wrote|written|store|stores|stored"
+    r"|webhooks?|callbacks?|ping|pings|pinged"
+    r"|log(?!\s+(?:in|into|on|out)\b)|logs|logged|logging)\b"
 )
 SEND_LOOKBACK = 100  # characters before the URL/email, cut at the sentence start
+# After the URL/email: it is named as a receiving endpoint ("... as the webhook").
+SEND_ROLE_PATTERN = r"\b(?:webhooks?|callbacks?|endpoint\s+for\s+(?:all|every|each))\b"
+SEND_LOOKAHEAD = 60
 URL_PLACEHOLDER_CHARS = "{$"  # data spliced into the request URL
 
 # TG-EXF-003: minimum blob lengths.
@@ -285,8 +293,16 @@ _PII_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 _SEND_RE = re.compile(SEND_VERB_PATTERN, re.IGNORECASE)
+_SEND_ROLE_RE = re.compile(SEND_ROLE_PATTERN, re.IGNORECASE)
 _SOFT_TOOL_RE = re.compile(SOFT_TOOL_DIRECTED_PATTERN, re.IGNORECASE)
-_SENTENCE_END_RE = re.compile(r"[.!?;\n]")
+# A sentence ends at punctuation followed by whitespace (or the end of the
+# text), or at a newline. So "config.json" and the abbreviations below
+# ("phone no. and dob", "e.g. ...") do not end it.
+_SENTENCE_END_RE = re.compile(
+    r"(?<!\bno)(?<!\be\.g)(?<!\bi\.e)(?<!\betc)(?<!\bvs)(?<!\bincl)(?<!\bapprox)"
+    r"[.!?;](?=\s|$)|\n",
+    re.IGNORECASE,
+)
 _BLOB_RE = re.compile(rf"(?<![A-Za-z0-9+/.])[A-Za-z0-9+/]{{{BASE64_MIN},}}={{0,2}}")
 _HEX_RE = re.compile(r"[0-9a-fA-F]+")
 _UPPER_RE = re.compile(r"[A-Z]")
@@ -767,16 +783,22 @@ def _pii_requests(text: str, ptr: str, col: _Collector) -> None:
             return
 
 
-def _sends(text: str, at: int, target: str) -> bool:
+def _sends(text: str, at: int, end: int, target: str) -> bool:
     """TG-EXF-005 context: a transmission verb earlier in the same sentence as
-    the URL/email at `at`, or a templated URL."""
+    the URL/email at text[at:end], a webhook/callback role later in it, or a
+    templated URL."""
     if any(c in target for c in URL_PLACEHOLDER_CHARS):
         return True
+    if _SEND_ROLE_RE.search(_sentence_tail(text, end, SEND_LOOKAHEAD)) is not None:
+        return True
     before = text[max(0, at - SEND_LOOKBACK) : at]
-    # Cut at the last sentence end before the URL ("e.g." costs a little recall).
-    ends = [i for i in (before.rfind(c) for c in ".!?;\n") if i >= 0]
-    if ends:
-        before = before[max(ends) + 1 :]
+    # Cut at the last sentence end before the URL (dots inside "config.json"
+    # or "e.g." are not sentence ends).
+    last = None
+    for last in _SENTENCE_END_RE.finditer(before):
+        pass
+    if last is not None:
+        before = before[last.end() :]
     return _SEND_RE.search(before) is not None
 
 
@@ -786,7 +808,7 @@ def _exfil_host(
     """Record a non-allowlisted URL/email; False once the rules are full."""
     context = _window(text, start, end)
     ok = col.add("TG-EXF-001", ptr, target, host, context)
-    if _sends(text, start, target):
+    if _sends(text, start, end, target):
         ok = col.add("TG-EXF-005", ptr, target, host, context) or ok
     return ok
 
