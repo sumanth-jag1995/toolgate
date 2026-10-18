@@ -43,3 +43,7 @@ async def test_no_synthetic_member_collides_with_canary_tokens(session):
     rows = await dump_members(session)
     non_canary = [r for r in rows if r["member_id"] != "M-900001"]
     assert not any(tok in str(r) for r in non_canary for tok in CANARY_TOKENS)
+    assert all(
+        r["dob"].isoformat() != CANARY["dob"] and r["email"] != CANARY["email"]
+        for r in non_canary
+    )

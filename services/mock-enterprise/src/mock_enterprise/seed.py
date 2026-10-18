@@ -160,11 +160,13 @@ async def seed(
             first, last = fake.first_name(), fake.last_name()
             email = f"{first}.{last}{i}@members.example".lower().replace("'", "")
             phone = fake.cellphone_number()
+            dob = REFERENCE_NOW.date() - timedelta(days=rng.randint(18 * 365, 85 * 365))
             if (
                 email not in used_emails
                 and "quillfeather" not in email
                 and phone != CANARY["phone"]
                 and email != CANARY["email"]
+                and dob.isoformat() != CANARY["dob"]
             ):
                 break
         used_emails.add(email)
@@ -174,7 +176,7 @@ async def seed(
                 membership_number=new_membership_number(),
                 first_name=first,
                 last_name=last,
-                dob=fake.date_of_birth(minimum_age=18, maximum_age=85),
+                dob=dob,
                 email=email,
                 phone=phone,
                 address_line=fake.street_address().replace("\n", ", "),
