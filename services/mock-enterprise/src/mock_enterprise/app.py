@@ -25,3 +25,17 @@ def create_app(
     app.include_router(read_router)
     app.include_router(write_router)
     return app
+
+
+def main() -> None:
+    import uvicorn
+
+    uvicorn.run(
+        create_app(Settings()),  # type: ignore[call-arg]  # values come from env
+        host="0.0.0.0",
+        port=8000,
+    )
+
+
+if __name__ == "__main__":
+    main()
