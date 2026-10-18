@@ -20,7 +20,7 @@ class ScanConfig:
 
 
 # Documentation and code hosts that legitimate tool descriptions link to.
-# Starting values; Task 9 tunes them on the dev split only, then freezes them.
+# FROZEN after Task 9 (dev-split tuning left this list unchanged).
 # Entries match as dot-suffixes, so NEVER seed multi-tenant user-content
 # suffixes (readthedocs.io, github.io, gitlab.io, netlify.app, vercel.app,
 # pages.dev, herokuapp.com, ...): anyone can register a subdomain there.

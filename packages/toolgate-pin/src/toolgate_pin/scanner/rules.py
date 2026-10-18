@@ -19,8 +19,9 @@ from toolgate_pin.reveal import reveal
 from toolgate_pin.scanner.config import ScanConfig
 
 # =============================================================================
-# Tunables. Task 9 adjusts severities and patterns here (dev split only), then
-# freezes them. Rule IDs are stable: they are written to the lockfile.
+# Tunables. FROZEN after Task 9 tuning on the dev split (see `bench --split dev`).
+# Any change here must be re-checked on the dev split first, never tuned on the
+# test split. Rule IDs are stable: they are written to the lockfile.
 # =============================================================================
 
 SEVERITY: dict[str, str] = {
@@ -34,9 +35,11 @@ SEVERITY: dict[str, str] = {
     "TG-XREF-001": "high",  # names a tool on another server
     "TG-XREF-002": "high",  # ordering / redirect phrasing
     "TG-XREF-003": "low",  # names another tool on the same server
-    "TG-EXF-001": "medium",  # URL or email host not allowlisted
+    "TG-EXF-001": "low",  # URL or email host not allowlisted (Task 9: was medium)
     "TG-EXF-002": "high",  # sensitive file path
     "TG-EXF-003": "medium",  # long base64 / hex blob
+    "TG-EXF-004": "medium",  # asks for several personal-data fields (Task 9)
+    "TG-EXF-005": "medium",  # sends data to a non-allowlisted host (Task 9)
     "TG-SIDE-001": "medium",  # free-text side-channel parameter
     "TG-SHADOW-001": "high",  # same / near name as a tool on another server
 }
@@ -55,6 +58,8 @@ MESSAGE: dict[str, str] = {
     "TG-EXF-001": "URL or email host not on the allowlist",
     "TG-EXF-002": "sensitive file path",
     "TG-EXF-003": "long encoded blob (base64/hex)",
+    "TG-EXF-004": "asks for several personal-data fields of a person",
+    "TG-EXF-005": "sends data to a host not on the allowlist",
     "TG-SIDE-001": "free-text parameter usable as a side channel",
     "TG-SHADOW-001": "same or near name as a tool on another server",
 }
@@ -71,6 +76,8 @@ OUTPUT_RULES = frozenset(
         "TG-XREF-001",
         "TG-XREF-002",
         "TG-EXF-001",
+        "TG-EXF-004",
+        "TG-EXF-005",
     }
 )
 DEFINITION_RULES = frozenset(SEVERITY)
@@ -168,6 +175,49 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     r"(?<![\w.])\.(?:netrc|git-credentials|npmrc|pypirc|bash_history|zsh_history)\b",
 )
 
+# TG-EXF-004: a request verb, then a person's possessive, then at least
+# PII_MIN_FIELDS distinct personal-data fields later in the same sentence
+# ("include the member's email and phone in `batch_ref`"). One field alone
+# ("You must provide the user's email") is ordinary API input.
+PII_REQUEST_PATTERN = (
+    r"\b(?:copy|include|pass|put|provide|set|write|insert|append|attach|add|send"
+    r"|embed|forward|fill|populate|supply|enter|place|record|store)\b[^.\n]{0,40}?"
+    r"\b(?:user|member|customer|patient|client|caller|policyholder|account\s+holder"
+    r"|employee|person)(?:'s|’s|s')"
+)
+PII_FIELDS: dict[str, str] = {
+    "email": r"e-?mail(?:[\s_]address)?",
+    "phone": r"(?:phone|mobile|telephone)(?:[\s_]number)?",
+    "dob": r"dob|date[\s_]of[\s_]birth|birth[\s_]?date|birthday",
+    "member_number": r"member(?:ship)?[\s_]?(?:number|no|id)",
+    "last_name": r"last[\s_]?name|surname|family[\s_]name",
+    "first_name": r"first[\s_]?name|given[\s_]name",
+    "full_name": r"full[\s_]?name",
+    "address": r"(?:home|postal|street)[\s_]address",
+    "national_id": (
+        r"ssn|social[\s_]security(?:[\s_]number)?"
+        r"|national[\s_]insurance(?:[\s_]number)?|passport(?:[\s_]number)?"
+    ),
+    "password": r"passwords?|passcodes?",
+    "credential": r"credentials?|api[\s_]?keys?|access[\s_]tokens?",
+    "card": r"(?:credit|debit)[\s_]card(?:[\s_]number)?|card[\s_]number",
+}
+PII_MIN_FIELDS = 2
+PII_SCAN_CHARS = 80  # after the possessive; cut at the end of the sentence
+
+# TG-EXF-005: a transmission verb earlier in the same sentence as a URL or email
+# that is not allowlisted, or a templated URL. A bare documentation link ("see
+# https://...") is only TG-EXF-001 (low).
+SEND_VERB_PATTERN = (
+    r"\b(?:send|sends|sent|sending|post|posts|posted|posting|upload|uploads"
+    r"|uploaded|forward|forwards|forwarded|submit|submits|submitted|transmit"
+    r"|transmits|transmitted|mirror|mirrors|mirrored|copy|copies|copied|deliver"
+    r"|delivers|delivered|relay|relays|relayed|push|pushes|pushed|sync|syncs"
+    r"|synced|beacon|exfiltrate|cc|bcc|e-?mail|e-?mails|e-?mailed)\b"
+)
+SEND_LOOKBACK = 100  # characters before the URL/email, cut at the sentence start
+URL_PLACEHOLDER_CHARS = "{$"  # data spliced into the request URL
+
 # TG-EXF-003: minimum blob lengths.
 BASE64_MIN = 40
 HEX_MIN = 64
@@ -186,6 +236,15 @@ SIDE_CHANNEL_TOKENS = frozenset(
         "sidenotes",
         "feedback",
     }
+)
+# A parameter whose name has one of these tokens is an identifier ("note_id"),
+# not free text, even if it also has a side-channel token (Task 9).
+SIDE_CHANNEL_EXEMPT_TOKENS = frozenset({"id", "ids", "uuid", "guid"})
+
+# TG-INS-002: "always call X" / "must first call X" where X is another tool on
+# the same server is ordinary sequencing, like TG-XREF-003 (Task 9).
+SOFT_TOOL_DIRECTED_PATTERN = (
+    r"\b(?:always\s+(?:call|use|invoke|run)|must\s+(?:first|always))\b"
 )
 
 # TG-SHADOW-001: case-folded edit distance; fuzzy matching only for names at
@@ -218,6 +277,16 @@ _REDIRECT_RE = re.compile(REDIRECT_PATTERN, re.IGNORECASE)
 _URL_RE = re.compile(URL_PATTERN, re.IGNORECASE)
 _EMAIL_RE = re.compile(EMAIL_PATTERN)
 _PATH_RE = _alt(SENSITIVE_PATH_PATTERNS)
+_PII_REQ_RE = re.compile(PII_REQUEST_PATTERN, re.IGNORECASE)
+_PII_FIELD_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    + "|".join(f"(?P<{k}>{v})" for k, v in PII_FIELDS.items())
+    + r")(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_SEND_RE = re.compile(SEND_VERB_PATTERN, re.IGNORECASE)
+_SOFT_TOOL_RE = re.compile(SOFT_TOOL_DIRECTED_PATTERN, re.IGNORECASE)
+_SENTENCE_END_RE = re.compile(r"[.!?;\n]")
 _BLOB_RE = re.compile(rf"(?<![A-Za-z0-9+/.])[A-Za-z0-9+/]{{{BASE64_MIN},}}={{0,2}}")
 _HEX_RE = re.compile(r"[0-9a-fA-F]+")
 _UPPER_RE = re.compile(r"[A-Z]")
@@ -654,6 +723,74 @@ def _redirects(text: str, ptr: str, ctx: _Ctx, col: _Collector) -> None:
             return
 
 
+def _sentence_tail(text: str, start: int, limit: int) -> str:
+    """Up to `limit` characters from `start`, cut at the end of the sentence."""
+    tail = text[start : start + limit]
+    end = _SENTENCE_END_RE.search(tail)
+    return tail if end is None else tail[: end.start()]
+
+
+def _soft_imperatives(text: str, ptr: str, ctx: _Ctx, col: _Collector) -> None:
+    """TG-INS-002, except "always call X" / "must first call X" naming another
+    tool on the same server: ordinary sequencing, like TG-XREF-003."""
+    if "TG-INS-002" not in col.rules:
+        return
+    for m in _SOFT_RE.finditer(text):
+        if _SOFT_TOOL_RE.fullmatch(m.group()) is not None:
+            target = _redirect_target(_sentence_tail(text, m.end(), 60), ctx)
+            if target is not None and target in ctx.siblings:
+                continue
+        if not col.add("TG-INS-002", ptr, m.group(), "", _window(text, *m.span())):
+            return
+
+
+def _pii_requests(text: str, ptr: str, col: _Collector) -> None:
+    """TG-EXF-004: a request for PII_MIN_FIELDS or more of a person's fields."""
+    if "TG-EXF-004" not in col.rules:
+        return
+    for m in _PII_REQ_RE.finditer(text):
+        tail = _sentence_tail(text, m.end(), PII_SCAN_CHARS)
+        fields: dict[str, int] = {}
+        for f in _PII_FIELD_RE.finditer(tail):
+            if f.lastgroup is not None:
+                fields.setdefault(f.lastgroup, f.end())
+        if len(fields) < PII_MIN_FIELDS:
+            continue
+        end = m.end() + max(fields.values())
+        if not col.add(
+            "TG-EXF-004",
+            ptr,
+            text[m.start() : end],
+            ", ".join(fields),
+            _window(text, m.start(), end),
+        ):
+            return
+
+
+def _sends(text: str, at: int, target: str) -> bool:
+    """TG-EXF-005 context: a transmission verb earlier in the same sentence as
+    the URL/email at `at`, or a templated URL."""
+    if any(c in target for c in URL_PLACEHOLDER_CHARS):
+        return True
+    before = text[max(0, at - SEND_LOOKBACK) : at]
+    # Cut at the last sentence end before the URL ("e.g." costs a little recall).
+    ends = [i for i in (before.rfind(c) for c in ".!?;\n") if i >= 0]
+    if ends:
+        before = before[max(ends) + 1 :]
+    return _SEND_RE.search(before) is not None
+
+
+def _exfil_host(
+    text: str, ptr: str, col: _Collector, start: int, end: int, target: str, host: str
+) -> bool:
+    """Record a non-allowlisted URL/email; False once the rules are full."""
+    context = _window(text, start, end)
+    ok = col.add("TG-EXF-001", ptr, target, host, context)
+    if _sends(text, start, target):
+        ok = col.add("TG-EXF-005", ptr, target, host, context) or ok
+    return ok
+
+
 def _allowed(host: str, allow: tuple[str, ...]) -> bool:
     return any(host == e or host.endswith("." + e) for e in allow)
 
@@ -695,8 +832,8 @@ def _urls(text: str, ptr: str, ctx: _Ctx, col: _Collector) -> None:
             spans.append(m.span())
             url = m.group().rstrip(".,;:!?)]}")
             host, allowed = _url_host(url, ctx.allowlist)
-            if not allowed and not col.add(
-                "TG-EXF-001", ptr, url, host, _window(text, *m.span())
+            if not allowed and not _exfil_host(
+                text, ptr, col, m.start(), m.end(), url, host
             ):
                 return
     if "@" not in text:
@@ -721,13 +858,8 @@ def _urls(text: str, ptr: str, ctx: _Ctx, col: _Collector) -> None:
             text[local_start - 1].isalnum() or text[local_start - 1] in "._+-"
         ):
             local_start -= 1
-        if not col.add(
-            "TG-EXF-001",
-            ptr,
-            text[local_start:pos] + "@" + host,
-            host,
-            _window(text, local_start, m.end()),
-        ):
+        address = text[local_start:pos] + "@" + host
+        if not _exfil_host(text, ptr, col, local_start, m.end(), address, host):
             return
 
 
@@ -766,11 +898,12 @@ def _text_rules(
     every text rule except URL/email (TG-EXF-001) and blob (TG-EXF-003) checks,
     whose false positives ($schema/$id URIs, hashes) live there."""
     _regex_rule(_INS_RE, "TG-INS-001", text, ptr, col)
-    _regex_rule(_SOFT_RE, "TG-INS-002", text, ptr, col)
+    _soft_imperatives(text, ptr, ctx, col)
     _xref_mentions(text, ptr, ctx, col)
     _redirects(text, ptr, ctx, col)
     if not identifier:
         _urls(text, ptr, ctx, col)
+        _pii_requests(text, ptr, col)
     _regex_rule(_PATH_RE, "TG-EXF-002", text, ptr, col)
     if not identifier:
         _blobs(text, ptr, col)
@@ -848,6 +981,8 @@ def _is_free_text(sub: Any) -> bool:
 
 def _side_channel(name: str, sub: Any, ptr: str, col: _Collector) -> None:
     tokens = {t.lower() for t in _TOKEN_SPLIT_RE.split(name) if t}
+    if tokens & SIDE_CHANNEL_EXEMPT_TOKENS:
+        return
     joined = re.sub(r"[^a-z0-9]", "", name.lower())
     if (
         tokens & SIDE_CHANNEL_TOKENS or joined in SIDE_CHANNEL_TOKENS

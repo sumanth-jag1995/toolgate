@@ -61,6 +61,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_target(check)
     check.add_argument("--format", choices=("text", "json"), default="text")
+
+    bench = sub.add_parser(
+        "bench", help="print the corpus detection / false-positive table"
+    )
+    bench.add_argument("--split", choices=("test", "dev"), default="test")
+    bench.add_argument(
+        "--tiers",
+        metavar="rules,classifier,judge",
+        help="comma-separated tiers (default: every tier available here)",
+    )
+    bench.add_argument("--format", choices=("text", "md", "json"), default="text")
+    bench.add_argument(
+        "--no-cache", action="store_true", help="bypass the LLM judge cache"
+    )
     return parser
 
 
@@ -147,6 +161,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _usage_error("check", exc)
         return check_cmd.run(
             target, name=args.name, lockfile=args.lockfile, fmt=args.format
+        )
+    if args.command == "bench":
+        from toolgate_pin.commands import bench as bench_cmd
+
+        return bench_cmd.run(
+            split=args.split, tiers=args.tiers, fmt=args.format, no_cache=args.no_cache
         )
     return 2  # pragma: no cover  (later tasks register more subcommands)
 
