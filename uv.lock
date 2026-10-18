@@ -1675,21 +1675,25 @@ name = "toolgate-gateway"
 version = "0.1.0"
 source = { editable = "packages/toolgate-gateway" }
 dependencies = [
+    { name = "asyncpg" },
     { name = "httpx" },
     { name = "mcp" },
     { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "pyyaml" },
+    { name = "rfc8785" },
     { name = "toolgate-pin" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "asyncpg", specifier = ">=0.32.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=1.30,<2" },
     { name = "pydantic-settings", specifier = ">=2.4" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
     { name = "pyyaml", specifier = ">=6" },
+    { name = "rfc8785", specifier = ">=0.1.4" },
     { name = "toolgate-pin", editable = "packages/toolgate-pin" },
 ]
 
