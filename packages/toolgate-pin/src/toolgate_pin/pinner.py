@@ -15,6 +15,15 @@ from toolgate_pin.store import PinStore
 
 _UNCANONICALIZABLE = "definition could not be canonicalized"
 
+# Frozen trace vocabulary for toolgate.decision.
+_DECISION = {
+    None: "allow",
+    "drift": "quarantine_drift",
+    "unpinned": "quarantine_unpinned",
+    "removed": "quarantine_removed",
+    "server_drift": "quarantine_server",
+}
+
 
 def _tool_name(tool: Any) -> str:
     if isinstance(tool, mcp.types.Tool):
@@ -108,7 +117,7 @@ class Pinner:
                     {
                         "toolgate.tool.name": name,
                         "toolgate.tool.hash": observed or "uncanonicalizable",
-                        "toolgate.decision": reason or "allowed",
+                        "toolgate.decision": _DECISION[reason],
                     },
                 )
                 if reason is None:
@@ -134,7 +143,7 @@ class Pinner:
                         {
                             "toolgate.tool.name": name,
                             "toolgate.tool.hash": pin.hash,
-                            "toolgate.decision": "removed",
+                            "toolgate.decision": _DECISION["removed"],
                         },
                     )
                     quarantined.append(

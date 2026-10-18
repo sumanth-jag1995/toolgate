@@ -202,10 +202,14 @@ def test_trace_events(monkeypatch, pinner, tools):
     assert s.attributes["toolgate.quarantined_count"] == 2
     events = [(e.name, dict(e.attributes)) for e in s.events]
     tool_events = [a for n, a in events if n == "toolgate.tool"]
-    assert [a["toolgate.decision"] for a in tool_events] == ["allowed", "drift"]
+    assert [a["toolgate.decision"] for a in tool_events] == [
+        "allow",
+        "quarantine_drift",
+    ]
     assert tool_events[0]["toolgate.tool.hash"] == pin_hash(tools[0])
     removed = [a for n, a in events if n == "quarantine_removed"]
     assert removed[0]["toolgate.tool.name"] == "read_c"
+    assert removed[0]["toolgate.decision"] == "quarantine_removed"
     assert removed[0]["toolgate.tool.hash"] == pin_hash(tools[2])
     for _, attrs in events:
         assert not any("SECRET-DESCRIPTION" in str(v) for v in attrs.values())
@@ -215,3 +219,24 @@ def test_trace_events(monkeypatch, pinner, tools):
 def test_no_otel_is_noop(monkeypatch, pinner, tools):
     monkeypatch.setattr(tracing, "_otel_trace", None)
     assert pinner.verify("core-read", tools).ok
+
+
+def test_trace_server_drift_decision(monkeypatch, pinner, tools):
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    fake = SimpleNamespace(get_tracer=lambda name: provider.get_tracer(name))
+    monkeypatch.setattr(tracing, "_otel_trace", fake)
+
+    pinner.verify("core-read", [*tools, {"name": "zzz"}], server_info={"name": "evil"})
+    pinner.verify("core-read", [*tools, {"name": "zzz"}])
+    drift, unpinned = exporter.get_finished_spans()
+    assert {e.attributes["toolgate.decision"] for e in drift.events} == {
+        "quarantine_server"
+    }
+    assert [e.attributes["toolgate.decision"] for e in unpinned.events] == [
+        "allow",
+        "allow",
+        "allow",
+        "quarantine_unpinned",
+    ]
