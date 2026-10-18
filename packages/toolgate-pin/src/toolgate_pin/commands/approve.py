@@ -89,6 +89,11 @@ def run(
     out = out if out is not None else sys.stdout
     err = err if err is not None else sys.stderr
     env = env if env is not None else os.environ
+    judge = None
+    if "judge" in tiers:
+        from toolgate_pin.scanner.judge import Judge
+
+        judge = Judge.from_env(env=env)  # None without a key: reported unavailable
 
     def emit(text: str = "") -> None:
         safe_print(ascii_brackets(text, out), file=out)
@@ -158,6 +163,7 @@ def run(
             prior=old.definition if old is not None else None,
             inventory=inventory,
             tiers=tiers,
+            judge=judge,
         )
         reports[tool.name] = report
         unavailable.update(report.unavailable)

@@ -38,11 +38,16 @@ def auto_tiers() -> tuple[str, ...]:
 def _tier_objects(tiers: tuple[str, ...], no_cache: bool) -> tuple[Any, Any]:
     """(classifier, judge) scorers for the requested tiers.
 
-    Tasks 10 and 11 build these; until then a requested classifier or judge is
-    reported unavailable by run_bench.
+    The judge is built only when requested and OPENROUTER_API_KEY is set; a
+    missing scorer is reported unavailable by run_bench. (The classifier is
+    built by a later task.)
     """
-    del tiers, no_cache
-    return None, None
+    judge = None
+    if "judge" in tiers:
+        from toolgate_pin.scanner.judge import Judge
+
+        judge = Judge.from_env(use_cache=not no_cache)
+    return None, judge
 
 
 def run(*, split: str, tiers: str | None, fmt: str, no_cache: bool) -> int:
