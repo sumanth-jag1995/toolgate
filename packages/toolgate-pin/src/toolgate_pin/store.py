@@ -136,7 +136,7 @@ class LockfileStore:
             ) from exc
         try:
             data = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
             raise LockfileError(
                 f"{self.path}: invalid JSON ({type(exc).__name__})"
             ) from exc

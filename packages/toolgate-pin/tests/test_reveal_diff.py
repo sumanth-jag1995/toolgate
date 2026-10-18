@@ -57,3 +57,16 @@ def test_safe_print_utf8_passthrough():
     safe_print("caf\u00e9", file=buf)
     buf.flush()
     assert buf.buffer.getvalue() == "caf\u00e9\n".encode()
+
+
+def test_reveal_line_separators():
+    assert "\u27e6U+2028 LINE SEPARATOR\u27e7" in reveal("a\u2028b")
+    assert "\u27e6U+2029 PARAGRAPH SEPARATOR\u27e7" in reveal("a\u2029b")
+    assert "U+0085" in reveal("a\u0085b")
+
+
+def test_diff_line_separator_swap_is_not_empty():
+    for sep in ("\u2028", "\u2029", "\u0085"):
+        d = diff({"d": "a b"}, {"d": f"a{sep}b"})
+        assert d, sep
+        assert f"U+{ord(sep):04X}" in d

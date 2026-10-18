@@ -74,3 +74,11 @@ def test_in_memory_store():
     assert s.load().servers == {}
     s.save(_pinset())
     assert s.load().get("s") is not None
+
+
+def test_deeply_nested_lockfile_raises_lockfile_error(tmp_path):
+    p = tmp_path / "l.json"
+    p.write_text("[" * 100000)
+    with pytest.raises(LockfileError) as exc:
+        LockfileStore(p).load()
+    assert str(p) in str(exc.value)

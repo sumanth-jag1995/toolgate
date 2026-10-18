@@ -12,7 +12,7 @@ from toolgate_pin.reveal import reveal
 def _lines(defn: dict[str, Any] | None) -> list[str]:
     if defn is None:
         return []
-    return json.dumps(defn, indent=2, sort_keys=True, ensure_ascii=False).splitlines()
+    return json.dumps(defn, indent=2, sort_keys=True, ensure_ascii=False).split("\n")
 
 
 def diff(pinned: dict[str, Any] | None, observed: dict[str, Any] | None) -> str:

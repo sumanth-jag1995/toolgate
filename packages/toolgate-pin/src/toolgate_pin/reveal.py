@@ -15,6 +15,7 @@ def _is_hidden(ch: str) -> bool:
         or 0xFE00 <= cp <= 0xFE0F  # variation selectors
         or 0xE0100 <= cp <= 0xE01EF  # variation selectors supplement
         or cp in (0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF)  # zero-width
+        or cp in (0x2028, 0x2029, 0x0085)  # line/paragraph separators, NEL
     )
 
 
