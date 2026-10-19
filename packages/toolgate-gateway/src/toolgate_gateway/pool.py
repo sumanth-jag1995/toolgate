@@ -14,6 +14,7 @@ from the transport may echo URLs or headers.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable
@@ -29,6 +30,9 @@ from mcp.shared.exceptions import McpError
 from mcp.types import (
     CONNECTION_CLOSED,
     CallToolResult,
+    CancelledNotification,
+    CancelledNotificationParams,
+    ClientNotification,
     Implementation,
     InitializeResult,
     ServerNotification,
@@ -69,17 +73,22 @@ class SessionFactory(Protocol):
 
 class DownstreamUnavailable(Exception):
     """The downstream could not be reached, timed out, or its session closed.
-    The message names the server only."""
+    The message names the server only. ``outcome_unknown``: the call was
+    sent and then abandoned on timeout, so it may have run downstream."""
 
-    def __init__(self, server_id: str) -> None:
+    def __init__(self, server_id: str, *, outcome_unknown: bool = False) -> None:
         super().__init__(f"downstream {server_id} is unavailable")
         self.server_id = server_id
+        self.outcome_unknown = outcome_unknown
 
 
 # 30 s for connect/write/pool; 300 s read so the SDK's idle GET SSE stream
 # (server-initiated notifications such as list_changed) is not torn down.
 # Per-request bounds are enforced by the pool with asyncio timeouts.
 HTTP_TIMEOUT = httpx.Timeout(30.0, read=300.0)
+
+# Bound on sending notifications/cancelled for an abandoned call.
+CANCEL_NOTIFY_TIMEOUT_S = 1.0
 
 
 def _http_client(
@@ -153,6 +162,22 @@ class _Dropped(Exception):
 def _reap(task: asyncio.Future[Any]) -> None:
     """Mark a task's outcome as retrieved so nothing logs 'never retrieved'."""
     task.add_done_callback(lambda t: t.cancelled() or t.exception())
+
+
+async def _call_tool(
+    session: ClientSession,
+    name: str,
+    arguments: dict[str, Any] | None,
+    request_ids: list[int],
+) -> CallToolResult:
+    """``session.call_tool``, recording the JSON-RPC id its request takes.
+
+    BaseSession.send_request takes ``_request_id`` as the id with no await
+    before it, and call_tool awaits nothing before send_request, so the
+    value read here, on the same loop with no await in between, is the id
+    of this call's request."""
+    request_ids.append(session._request_id)  # private: see docstring
+    return await session.call_tool(name, arguments)
 
 
 class DownstreamPool:
@@ -243,20 +268,60 @@ class DownstreamPool:
         Raises DownstreamUnavailable on connect failure, timeout or a closed
         session (and drops the session). A JSON-RPC error from a live server
         propagates as McpError, keeping the session. The caller's
-        cancellation propagates and keeps the session."""
+        cancellation propagates and keeps the session.
+
+        A call abandoned by the caller's cancellation or the timeout is
+        cancelled downstream with notifications/cancelled (mcp's client does
+        not send it): its outcome there is unknown."""
         deadline = self._deadline()
         conn = await self._get(server_id, deadline)
+        request_ids: list[int] = []
         try:
             async with asyncio.timeout_at(deadline):
-                return await self._run(conn, conn.session.call_tool(name, arguments))
+                return await self._run(
+                    conn, _call_tool(conn.session, name, arguments, request_ids)
+                )
+        except asyncio.CancelledError:
+            await self._notify_cancelled(conn, request_ids, "cancelled")
+            raise
         except McpError as exc:
             if exc.error.code != CONNECTION_CLOSED:
                 raise
             failure: Exception = exc
-        except (TimeoutError, _Dropped, *_BROKEN) as exc:
+        except TimeoutError as exc:
+            await self._notify_cancelled(conn, request_ids, "timed out")
+            self._fail("tools/call", server_id, conn, exc)
+            raise DownstreamUnavailable(
+                server_id, outcome_unknown=bool(request_ids)
+            ) from None
+        except (_Dropped, *_BROKEN) as exc:
             failure = exc
         self._fail("tools/call", server_id, conn, failure)
         raise DownstreamUnavailable(server_id) from None
+
+    async def _notify_cancelled(
+        self, conn: _Conn, request_ids: list[int], reason: str
+    ) -> None:
+        """Send notifications/cancelled for the abandoned request: in its own
+        task bounded by CANCEL_NOTIFY_TIMEOUT_S, shielded from the caller's
+        cancellation; failures are ignored (the session may be gone)."""
+        if not request_ids or not conn.alive:
+            return  # never sent, or nowhere to send the cancellation
+        note = ClientNotification(
+            CancelledNotification(
+                params=CancelledNotificationParams(
+                    requestId=request_ids[0], reason=reason
+                )
+            )
+        )
+
+        async def send() -> None:
+            with contextlib.suppress(Exception):
+                async with asyncio.timeout(CANCEL_NOTIFY_TIMEOUT_S):
+                    await conn.session.send_notification(note)
+
+        task = self._spawn(send(), "cancel-notify")
+        await asyncio.shield(task)
 
     def _fail(self, what: str, server_id: str, conn: _Conn, exc: Exception) -> None:
         log.warning(

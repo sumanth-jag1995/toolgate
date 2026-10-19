@@ -34,7 +34,13 @@ from opentelemetry import trace
 from opentelemetry.trace import Span
 from toolgate_pin import InventoryTool, Pinner, PinSet, Quarantine, scan_output
 
-from toolgate_gateway.audit import AuditRecord, AuditWriter, args_hmac
+from toolgate_gateway.audit import (
+    MAX_TEXT,
+    AuditRecord,
+    AuditWriter,
+    args_hmac,
+    safe_text,
+)
 from toolgate_gateway.downstreams import namespaced, split_namespaced
 from toolgate_gateway.pins import PinSource
 from toolgate_gateway.policy import Allowlist
@@ -61,9 +67,14 @@ _AUDIT_DOWN = "audit log unavailable; call refused"
 _DOWNSTREAM_ERROR = "downstream error; call failed"
 _WITHHELD = "tool output withheld by policy"
 
-# A caller-supplied tool name is truncated to this length in audit rows and
+# Audit reasons of a call abandoned after it was sent downstream.
+_CANCELLED = "cancelled (outcome unknown)"
+_TIMED_OUT = "timed out (outcome unknown)"
+
+# A caller-supplied tool name is sanitised (safe_text: NUL and lone
+# surrogates escaped) and truncated to this length in audit rows, spans and
 # logs (it is unbounded on the wire; a known name is far shorter).
-MAX_LOGGED_NAME = 256
+MAX_LOGGED_NAME = MAX_TEXT
 
 # Errors examined to name the failing schema keyword (bounds the cost of a
 # huge argument with many invalid items).
@@ -79,6 +90,16 @@ def _error(message: str) -> CallToolResult:
     return CallToolResult(
         content=[TextContent(type="text", text=message)], isError=True
     )
+
+
+def _without_meta(result: CallToolResult) -> CallToolResult:
+    """``result`` without ``_meta``, on the result or any content block: the
+    output scan does not read it, so it must not reach the agent."""
+    content = [
+        c.model_copy(update={"meta": None}) if getattr(c, "meta", None) else c
+        for c in result.content
+    ]
+    return result.model_copy(update={"meta": None, "content": content})
 
 
 def _schema_failure(validator: Draft202012Validator, args: Any) -> str | None:
@@ -133,10 +154,11 @@ class _Call:
         self.root = root
         self.client_id = client_id
         self.agent_id = agent_id
-        self.name = name[:MAX_LOGGED_NAME]
+        self.name = safe_text(name, MAX_LOGGED_NAME)
         self.arguments = arguments
         self.start = start
         self.tool_hash: str | None = None
+        self.forwarded = False  # the downstream was (or may have been) called
 
     def set_tool_hash(self, tool_hash: str | None) -> None:
         self.tool_hash = tool_hash
@@ -156,20 +178,23 @@ class _Call:
         if self.arguments is not None and args is None:
             args = {"<non-object>": type(self.arguments).__name__}
         rec = AuditRecord(
-            agent_id=self.agent_id,
-            client_id=self.client_id,
+            agent_id=safe_text(self.agent_id),
+            client_id=safe_text(self.client_id),
             tool=self.name,
             tool_hash=self.tool_hash,
             args_hmac=args_hmac(self.core.hmac_key, args),
             decision=decision,
-            reason=reason,
+            reason=None if reason is None else safe_text(reason),
             latency_ms=latency_ms,
             trace_id=trace_id_of(self.root),
         )
         if not self.core.audit.submit(rec):
-            log.warning(
+            # After forwarding, the call happened but has no audit row.
+            level = logging.ERROR if self.forwarded else logging.WARNING
+            log.log(
+                level,
                 "audit drop: row not accepted client=%s tool=%r decision=%s",
-                self.client_id,
+                rec.client_id,
                 self.name,
                 decision,
             )
@@ -260,8 +285,8 @@ class GatewayCore:
         with span(
             "gateway.tools_call",
             **{
-                "toolgate.client_id": client_id,
-                "toolgate.tool": name[:MAX_LOGGED_NAME],
+                "toolgate.client_id": safe_text(client_id),
+                "toolgate.tool": safe_text(name, MAX_LOGGED_NAME),
             },
         ) as root:
             call = _Call(self, client_id, agent_id, name, arguments, start, root)
@@ -325,15 +350,15 @@ class GatewayCore:
         cancelled: asyncio.CancelledError | None = None
         result: CallToolResult | None = None
         with _stage("gateway.forward", denial) as fwd:
+            call.forwarded = True
             try:
                 result = await self.pool.call_tool(server_id, tool_name, args)
             except asyncio.CancelledError as exc:
                 cancelled = exc
                 fwd.set_attribute("toolgate.decision", "error_downstream")
-            except DownstreamUnavailable:
-                denial.append(
-                    ("error_downstream", "unavailable", _unavailable(server_id))
-                )
+            except DownstreamUnavailable as exc:
+                reason = _TIMED_OUT if exc.outcome_unknown else "unavailable"
+                denial.append(("error_downstream", reason, _unavailable(server_id)))
             except McpError:
                 denial.append(("error_downstream", "jsonrpc_error", _DOWNSTREAM_ERROR))
             except Exception as exc:  # noqa: BLE001 - any failure is a tool error
@@ -347,11 +372,12 @@ class GatewayCore:
                     ("error_downstream", type(exc).__name__, _DOWNSTREAM_ERROR)
                 )
         if cancelled is not None:
-            call.finish("error_downstream", "cancelled")
+            call.finish("error_downstream", _CANCELLED)
             raise cancelled
         if denial:
             return call.deny(denial[0])
         assert result is not None
+        result = _without_meta(result)
 
         # 7. scan the output
         verdict: tuple[str, str | None] | None = None

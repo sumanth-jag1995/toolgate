@@ -9,9 +9,9 @@ from typing import Annotated, Literal
 import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData
+from mcp.types import CallToolResult, ErrorData
 from pydantic import Field
-from toolgate_gateway.audit import AuditWriter, args_hmac
+from toolgate_gateway.audit import AuditRecord, AuditWriter, args_hmac
 from toolgate_gateway.core import GatewayCore
 from toolgate_gateway.downstreams import DownstreamConfig
 from toolgate_gateway.pins import PinSource
@@ -439,7 +439,10 @@ async def test_cancelled_call_audited_and_propagates(make_core):
     with pytest.raises(asyncio.CancelledError):
         await task
     rec = only(audit)
-    assert (rec.decision, rec.reason) == ("error_downstream", "cancelled")
+    assert (rec.decision, rec.reason) == (
+        "error_downstream",
+        "cancelled (outcome unknown)",
+    )
     assert rec.tool_hash == core.snapshot["core-read.get_claim_status"].tool_hash
     assert SECRET not in repr(rec)
 
@@ -510,3 +513,143 @@ async def test_error_text_never_echoes_arguments(make_core):
         assert SECRET not in result.model_dump_json()
     assert len(audit.records) == len(cases)
     assert all(SECRET not in repr(r) for r in audit.records)
+
+
+async def test_timed_out_call_audited_outcome_unknown(make_core):
+    core, audit, _, _ = await make_core()
+
+    async def timing_out(server_id, name, arguments):
+        raise DownstreamUnavailable(server_id, outcome_unknown=True)
+
+    core.pool.call_tool = timing_out
+    result = await core.call_tool(
+        "servicing", "a", "core-read.get_claim_status", {"claim_id": "C-1"}
+    )
+    assert result.isError
+    assert "unavailable" in text_of(result)
+    rec = only(audit)
+    assert (rec.decision, rec.reason) == (
+        "error_downstream",
+        "timed out (outcome unknown)",
+    )
+
+
+async def test_audit_drop_after_forwarding_is_error_and_counted(make_core, caplog):
+    writer = AuditWriter(None, max_queue=1)  # type: ignore[arg-type]
+    writer._healthy = True  # as after a successful startup probe (never started)
+    core, _, calls, _ = await make_core(audit=writer)
+    real = core.pool.call_tool
+    other = AuditRecord("a", "c", "t", None, "h", "allow", None, None, None)
+
+    async def fill_then_call(server_id, name, arguments):
+        # The queue fills while the call is in flight: the row is refused.
+        assert writer.submit(other)
+        return await real(server_id, name, arguments)
+
+    core.pool.call_tool = fill_then_call
+    with caplog.at_level(logging.WARNING, logger="toolgate_gateway.core"):
+        result = await core.call_tool(
+            "servicing", "a", "core-read.get_claim_status", {"claim_id": "C-1"}
+        )
+    assert not result.isError
+    assert len(calls) == 1
+    assert writer.dropped_count == 1
+    drops = [r for r in caplog.records if "audit drop" in r.getMessage()]
+    assert [r.levelno for r in drops] == [logging.ERROR]
+
+
+async def test_denied_call_audit_drop_is_warning(make_core, caplog):
+    core, audit, _, _ = await make_core()
+    audit.reject = True
+    with caplog.at_level(logging.WARNING, logger="toolgate_gateway.core"):
+        await core.call_tool("servicing", "a", "nope.x", {})
+    drops = [r for r in caplog.records if "audit drop" in r.getMessage()]
+    assert [r.levelno for r in drops] == [logging.WARNING]
+
+
+async def test_result_meta_stripped(make_core):
+    """``_meta`` is not scanned, so it never reaches the agent: neither the
+    result's nor a content block's."""
+    core, audit, _, _ = await make_core()
+
+    async def with_meta(server_id, name, arguments):
+        return CallToolResult.model_validate(
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Claim found. Status approved.",
+                        "_meta": {"note": MALICIOUS_TEXT},
+                    }
+                ],
+                "_meta": {"note": MALICIOUS_TEXT},
+            }
+        )
+
+    core.pool.call_tool = with_meta
+    result = await core.call_tool(
+        "servicing", "a", "core-read.get_claim_status", {"claim_id": "C-1"}
+    )
+    assert not result.isError
+    assert text_of(result) == "Claim found. Status approved."
+    dumped = result.model_dump_json(by_alias=True, exclude_none=True)
+    assert "_meta" not in dumped and "Ignore previous" not in dumped
+    assert only(audit).decision == "allow"
+
+
+async def test_cancelled_call_cancels_downstream_request(
+    tmp_path, memory_factory_cls, write_lockfile, builders
+):
+    """End to end: cancelling the caller sends notifications/cancelled for
+    the forwarded request's id, and the call is audited as cancelled."""
+
+    def slow_probe() -> FastMCP:
+        server = FastMCP("probe")
+
+        @server.tool(name="wait", description="Waits.")
+        async def wait(seconds: float) -> str:
+            await asyncio.sleep(seconds)
+            return "done"
+
+        return server
+
+    servers = {**builders, "probe": slow_probe}
+    lock = tmp_path / "toolgate.lock.json"
+    await write_lockfile(lock, servers, CONFIGS)
+    factory = memory_factory_cls(servers, record=True)
+    pool = DownstreamPool(CONFIGS, factory)
+    await pool.start()
+
+    def received(method):
+        roots = [m.message.root for m in factory.received.get("probe", [])]
+        return [r for r in roots if getattr(r, "method", None) == method]
+
+    async def first(method):
+        for _ in range(500):
+            if found := received(method):
+                return found
+            await asyncio.sleep(0.01)
+        return []
+
+    try:
+        audit = FakeAudit()
+        core = GatewayCore(
+            pool, PinSource(lock), ALLOWLIST, audit, None, hmac_key=HMAC_KEY
+        )
+        await core.refresh_snapshot()
+        task = asyncio.create_task(
+            core.call_tool("servicing", "a", "probe.wait", {"seconds": 5})
+        )
+        (request,) = await first("tools/call")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        (note,) = await first("notifications/cancelled")
+        assert note.params["requestId"] == request.id
+        rec = only(audit)
+        assert (rec.decision, rec.reason) == (
+            "error_downstream",
+            "cancelled (outcome unknown)",
+        )
+    finally:
+        await pool.close()

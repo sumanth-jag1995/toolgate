@@ -248,6 +248,61 @@ async def test_close_bounded_with_hanging_connect(pool_and_factory):
     assert not pool._tasks
 
 
+def _messages(factory, server_id, method):
+    """JSON-RPC messages with ``method`` the server received, in order."""
+    out = []
+    for message in factory.received.get(server_id, []):
+        root = getattr(getattr(message, "message", None), "root", None)
+        if getattr(root, "method", None) == method:
+            out.append(root)
+    return out
+
+
+async def _first(factory, server_id, method):
+    for _ in range(500):
+        if found := _messages(factory, server_id, method):
+            return found[0]
+        await anyio.sleep(0.01)
+    raise AssertionError(f"{server_id} never received {method}")
+
+
+@pytest.mark.parametrize("how", ["caller_cancel", "timeout"])
+async def test_cancelled_call_notifies_downstream(memory_factory_cls, how):
+    """mcp's client sends no notifications/cancelled itself: the pool does,
+    with the abandoned request's id, on caller cancel and on timeout."""
+    factory = memory_factory_cls(build_test_server, record=True)
+    timeout = 0.3 if how == "timeout" else 30.0
+    pool = DownstreamPool(CONFIGS, factory, call_timeout_s=timeout)
+    await pool.start()
+    try:
+        task = asyncio.create_task(pool.call_tool("core-read", "slow", {"seconds": 5}))
+        request = await _first(factory, "core-read", "tools/call")
+        if how == "caller_cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(DownstreamUnavailable):
+                await task
+        note = await _first(factory, "core-read", "notifications/cancelled")
+        assert note.params["requestId"] == request.id
+        assert len(_messages(factory, "core-read", "notifications/cancelled")) == 1
+    finally:
+        await pool.close()
+
+
+async def test_completed_call_sends_no_cancel(memory_factory_cls):
+    factory = memory_factory_cls(build_test_server, record=True)
+    pool = DownstreamPool(CONFIGS, factory)
+    await pool.start()
+    try:
+        await pool.call_tool("core-read", "get_claim_status", {"claim_id": "C"})
+        await anyio.sleep(0.05)
+        assert _messages(factory, "core-read", "notifications/cancelled") == []
+    finally:
+        await pool.close()
+
+
 def test_http_client_config():
     auth = CountingAuth()
     client = _http_client(auth)

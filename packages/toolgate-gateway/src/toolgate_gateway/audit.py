@@ -14,8 +14,30 @@ from typing import Any
 
 import asyncpg
 import rfc8785
+from asyncpg.exceptions._base import DataError as ArgumentEncodingError
 
 log = logging.getLogger(__name__)
+
+# Caller- or downstream-controlled text (a tool name) is bounded to this many
+# characters in audit rows, span attributes and log lines.
+MAX_TEXT = 256
+
+# Errors that reject a row's *data* (not the connection): the row can never
+# be written, so it is dropped alone instead of failing its whole batch.
+_ROW_ERRORS: tuple[type[BaseException], ...] = (
+    asyncpg.DataError,  # SQLSTATE class 22, e.g. NUL in text
+    asyncpg.IntegrityConstraintViolationError,  # class 23, e.g. a CHECK
+    ArgumentEncodingError,  # client side: an argument cannot be encoded
+    UnicodeError,
+)
+
+
+def safe_text(value: str, limit: int = MAX_TEXT) -> str:
+    """``value`` made storable as Postgres text and safe for spans and logs:
+    truncated, NUL and unencodable characters (lone surrogates) replaced by
+    backslash escapes, truncated again. Deterministic; never raises."""
+    escaped = value[:limit].encode("utf-8", "backslashreplace").decode("utf-8")
+    return escaped.replace("\x00", "\\x00")[:limit]
 
 
 def args_hmac(key: str, arguments: Mapping[str, Any] | None) -> str:
@@ -79,7 +101,11 @@ class AuditWriter:
         # Fail closed from a cold start: not healthy (so not accepting) until
         # the first successful probe, which start() kicks off.
         self._healthy = False
-        self.dropped_count = 0
+        # A batch whose write failed on a connection error: written first once
+        # the database answers again; dropped only by stop() while still down.
+        self._held: list[AuditRecord] = []
+        self.dropped_count = 0  # rows lost: refused by submit or never written
+        self.rejected_count = 0  # rows Postgres rejected for their data
 
     @property
     def healthy(self) -> bool:
@@ -106,11 +132,14 @@ class AuditWriter:
             self._task = None
 
     def submit(self, rec: AuditRecord) -> bool:
+        """Queue a row; False (counted in dropped_count) if not accepting."""
         if self._closed or not self._healthy:
+            self.dropped_count += 1
             return False
         try:
             self._queue.put_nowait(rec)
         except asyncio.QueueFull:
+            self.dropped_count += 1
             return False
         self._wake.set()
         return True
@@ -131,18 +160,50 @@ class AuditWriter:
         )
 
     async def _flush(self, batch: list[AuditRecord]) -> None:
-        """Write a batch; one retry, then drop and count. Updates health."""
-        rows = [astuple(r) for r in batch]
+        """Write a batch; updates health. A batch Postgres rejects for its
+        data is retried row by row, dropping (and counting) only the rejected
+        rows. A connection failure is retried once; then the unwritten rows
+        are held until the database answers again."""
+        pending = batch
         for attempt in (1, 2):
             try:
-                await self._write(rows)
+                await self._write([astuple(r) for r in pending])
+            except _ROW_ERRORS:
+                pending, failure = await self._write_rows(pending)
+                if failure is None:
+                    self._healthy = True
+                    return
             except Exception as exc:  # noqa: BLE001 - any DB failure = unhealthy
-                self._healthy = False
-                log.warning("audit flush failed (attempt %d): %s", attempt, exc)
+                failure = exc
             else:
                 self._healthy = True
                 return
-        self.dropped_count += len(batch)
+            self._healthy = False
+            # Type only: the message may echo a row's values.
+            log.warning(
+                "audit flush failed (attempt %d: %s)", attempt, type(failure).__name__
+            )
+        self._held = pending
+
+    async def _write_rows(
+        self, batch: list[AuditRecord]
+    ) -> tuple[list[AuditRecord], Exception | None]:
+        """Insert row by row, dropping rows rejected for their data. On a
+        connection failure, returns the unwritten rows and the error."""
+        for i, rec in enumerate(batch):
+            try:
+                await self._write([astuple(rec)])
+            except _ROW_ERRORS as exc:
+                self.rejected_count += 1
+                log.error(
+                    "audit row rejected by the database (%s) client=%s decision=%s",
+                    type(exc).__name__,
+                    safe_text(rec.client_id),
+                    safe_text(rec.decision),
+                )
+            except Exception as exc:  # noqa: BLE001 - connection failure
+                return batch[i:], exc
+        return [], None
 
     async def _probe(self) -> bool:
         try:
@@ -178,11 +239,17 @@ class AuditWriter:
     async def _run(self) -> None:
         while True:
             if not self._healthy:
-                # Rows stay queued while the DB is down; resume after recovery.
+                # Rows stay queued (and a failed batch held) while the DB is
+                # down; resume after recovery.
                 await self._recover()
                 if not self._healthy:  # stopping while still down
-                    self.dropped_count += self._queue.qsize()
+                    self.dropped_count += len(self._held) + self._queue.qsize()
+                    self._held = []
                     return
+            if self._held:
+                held, self._held = self._held, []
+                await self._flush(held)
+                continue
             if self._queue.empty():
                 if self._stop_event.is_set():
                     return

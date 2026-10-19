@@ -108,9 +108,13 @@ class MemoryFactory:
     ``builders`` is either one FastMCP builder used for every server or a
     mapping server_id -> builder. ``fail`` maps server_id -> number of
     connection attempts that raise before one succeeds (-1 = always);
-    server ids in ``down`` always fail; those in ``hang`` never connect."""
+    server ids in ``down`` always fail; those in ``hang`` never connect.
+    With ``record``, every client-to-server message is appended to
+    ``received[server_id]`` before the server sees it."""
 
-    def __init__(self, builders, *, fail=None, down=(), hang=(), delay=0.0):
+    def __init__(
+        self, builders, *, fail=None, down=(), hang=(), delay=0.0, record=False
+    ):
         self.builders = builders if callable(builders) else dict(builders)
         self.fail = dict(fail or {})
         self.fail.update(dict.fromkeys(down, -1))
@@ -120,6 +124,8 @@ class MemoryFactory:
         self.attempts: dict[str, int] = {}
         self.server_scopes: dict[str, anyio.CancelScope] = {}
         self.sessions: list[ClientSession] = []
+        self.record = record
+        self.received: dict[str, list] = {}
 
     def _build(self, server_id: str) -> FastMCP:
         if callable(self.builders):
@@ -144,11 +150,23 @@ class MemoryFactory:
             anyio.create_task_group() as tg,
         ):
             scope = anyio.CancelScope()
+            server_read = srv[0]
+            if self.record:
+                received = self.received.setdefault(sid, [])
+                relay_send, server_read = anyio.create_memory_object_stream(32)
+
+                async def relay():
+                    async with relay_send:
+                        async for message in srv[0]:
+                            received.append(message)
+                            await relay_send.send(message)
+
+                tg.start_soon(relay)
 
             async def run_server():
                 with scope:
                     await lowlevel.run(
-                        srv[0], srv[1], lowlevel.create_initialization_options()
+                        server_read, srv[1], lowlevel.create_initialization_options()
                     )
 
             tg.start_soon(run_server)

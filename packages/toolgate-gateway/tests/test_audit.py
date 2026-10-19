@@ -3,6 +3,8 @@ import os
 os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 import asyncio
+import dataclasses
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import quote, urlsplit
 
@@ -11,7 +13,9 @@ import pytest
 import pytest_asyncio
 from testcontainers.community.postgres import PostgresContainer
 from toolgate_gateway.audit import AuditRecord, AuditWriter, args_hmac
+from toolgate_gateway.core import GatewayCore
 from toolgate_gateway.db import create_pool, migrate
+from toolgate_gateway.policy import Allowlist
 from toolgate_gateway.reviews import PendingReviews
 from toolgate_pin.models import PinSet, ServerPin, Target, ToolPin
 
@@ -148,8 +152,8 @@ async def test_db_down_marks_unhealthy():
             await asyncio.sleep(0.1)
         assert writer.healthy is False
         assert writer.submit(_rec(3)) is False
-        # Unhealthy after the first failed attempt; the batch is counted as
-        # dropped only after the retry also fails.
+        # The refused row is counted as dropped; the in-flight batch is held
+        # for recovery and counted only if the writer stops while down.
         for _ in range(100):
             if writer.dropped_count >= 1:
                 break
@@ -214,14 +218,15 @@ async def test_queued_rows_survive_outage():
     pool.down = True
     for i in range(6):  # no await: all queued before the writer runs
         assert w.submit(_rec(i))
-    await _until(lambda: w.dropped_count == 2)
-    # First batch (2 rows) is dropped after its one retry; the rest stay queued.
-    assert not w.healthy
+    await _until(lambda: not w.healthy)
+    await asyncio.sleep(0.2)  # the first batch failed both attempts
+    # The failed batch is held (not dropped); the rest stay queued.
+    assert w.dropped_count == 0
     pool.down = False
     await _until(lambda: w.healthy)
     await w.stop()
-    assert len(pool.rows) == 4
-    assert w.dropped_count == 2
+    assert [r[2] for r in pool.rows] == [f"core-read.t{i}" for i in range(6)]
+    assert w.dropped_count == 0
 
 
 async def test_hung_db_marks_unhealthy_and_stop_returns():
@@ -332,3 +337,110 @@ async def test_pending_reviews_upsert_and_resolve(app_pool):
 async def test_migrate_idempotent(admin_dsn):
     await migrate(admin_dsn, APP_PASSWORD)
     await migrate(admin_dsn, APP_PASSWORD)
+
+
+# -- poisoned rows and outages (final-review fixes) --------------------------
+
+
+async def _audit_tools(admin_dsn) -> list[str]:
+    admin = await asyncpg.connect(admin_dsn)
+    try:
+        rows = await admin.fetch("SELECT tool FROM gateway.audit_log ORDER BY id")
+        return [r["tool"] for r in rows]
+    finally:
+        await admin.close()
+
+
+async def test_poisoned_rows_rejected_alone(app_pool, admin_dsn):
+    """A NUL and a lone-surrogate row in the same batch as a good row: only
+    the poisoned rows are rejected; the writer stays healthy."""
+    w = AuditWriter(app_pool, flush_interval_s=0.05)
+    await w.start()
+    await _until(lambda: w.accepting)
+    good = _rec(1)
+    nul = dataclasses.replace(_rec(2), tool="x\x00")
+    surrogate = dataclasses.replace(_rec(3), tool="\ud800")
+    assert all(w.submit(r) for r in (nul, good, surrogate))  # one batch
+    await _until(lambda: w.rejected_count == 2)
+    assert w.healthy and w.accepting
+    assert w.submit(_rec(4))
+    await w.stop()
+    assert await _audit_tools(admin_dsn) == ["core-read.t1", "core-read.t4"]
+    assert w.dropped_count == 0
+
+
+async def test_poisoned_tool_name_audited_sanitised(app_pool, admin_dsn):
+    """End to end: a caller-chosen name with NUL is denied and its row
+    persisted with a sanitised tool value."""
+    w = AuditWriter(app_pool, flush_interval_s=0.05)
+    await w.start()
+    await _until(lambda: w.accepting)
+    core = GatewayCore(
+        SimpleNamespace(server_ids=["core-read"]),  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]  # not reached: denied before pins
+        Allowlist({}),
+        w,
+        None,
+        hmac_key="k" * 32,
+    )
+    for name in ("x\x00", "core-read.\ud800"):
+        result = await core.call_tool("servicing", "a", name, {})
+        assert result.isError
+    await w.stop()
+    admin = await asyncpg.connect(admin_dsn)
+    try:
+        rows = await admin.fetch(
+            "SELECT tool, decision FROM gateway.audit_log ORDER BY id"
+        )
+    finally:
+        await admin.close()
+    assert [(r["tool"], r["decision"]) for r in rows] == [
+        ("x\\x00", "deny_unknown_tool"),
+        ("core-read.\\ud800", "deny_scope"),
+    ]
+    assert w.rejected_count == 0 and w.dropped_count == 0
+
+
+async def test_inflight_batch_written_after_recovery():
+    """The DB dies with a batch in flight: the batch is held, not dropped,
+    and written once the DB answers again."""
+    pool = FakePool()
+    w = AuditWriter(
+        pool, flush_interval_s=0.01, batch_size=10, probe_min_s=0.05, probe_max_s=0.1
+    )
+    await w.start()
+    await _until(lambda: w.healthy)
+    pool.down = True
+    for i in range(3):
+        assert w.submit(_rec(i))
+    await _until(lambda: not w.healthy)
+    await asyncio.sleep(0.3)  # both attempts failed; probes keep failing
+    assert pool.rows == []
+    pool.down = False
+    await _until(lambda: len(pool.rows) == 3)
+    await w.stop()
+    assert [r[2] for r in pool.rows] == [f"core-read.t{i}" for i in range(3)]
+    assert w.dropped_count == 0
+
+
+async def test_held_batch_dropped_only_on_stop_while_down():
+    pool = FakePool()
+    w = AuditWriter(
+        pool, flush_interval_s=0.01, batch_size=2, probe_min_s=0.05, probe_max_s=0.1
+    )
+    await w.start()
+    await _until(lambda: w.healthy)
+    pool.down = True
+    for i in range(5):
+        assert w.submit(_rec(i))
+    await _until(lambda: not w.healthy)
+    await asyncio.sleep(0.3)
+    assert w.dropped_count == 0
+    await asyncio.wait_for(w.stop(), 5)
+    assert w.dropped_count == 5 and pool.rows == []
+
+
+async def test_submit_refusal_counted_as_dropped():
+    w = AuditWriter(FakePool())
+    assert w.submit(_rec(1)) is False  # cold start: not accepting
+    assert w.dropped_count == 1
