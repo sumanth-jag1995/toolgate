@@ -310,7 +310,7 @@ class GatewayCore:
             return call.deny(denial[0])
 
         # 5. the audit log must be able to take the row before forwarding
-        with span("gateway.audit") as audit_span:
+        with span("gateway.audit_check") as audit_span:
             if not self.audit.accepting:
                 audit_span.set_attribute("toolgate.decision", "error_audit_down")
                 call.root.set_attribute("toolgate.decision", "error_audit_down")
@@ -534,7 +534,7 @@ class GatewayCore:
             "toolgate.alert",
             {
                 "toolgate.server_id": server_id,
-                "toolgate.tool": q.tool_name,
+                "toolgate.tool": q.tool_name[:MAX_LOGGED_NAME],
                 "toolgate.reason": q.reason,
                 "toolgate.observed_hash": q.observed_hash or "",
                 "toolgate.pinned_hash": q.pinned_hash or "",

@@ -40,5 +40,11 @@ def span(name: str, **attrs: Any) -> Iterator[_NoopSpan | _Span]:
         yield _NOOP
         return
     tracer = _otel_trace.get_tracer("toolgate_pin")
-    with tracer.start_as_current_span(name, attributes=attrs or None) as inner:
+    # Exceptions are not recorded: their messages could echo scanned values.
+    with tracer.start_as_current_span(
+        name,
+        attributes=attrs or None,
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as inner:
         yield _Span(inner)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import sys
 from collections.abc import Sequence
@@ -35,7 +36,7 @@ from toolgate_gateway.policy import Allowlist, PolicyError
 from toolgate_gateway.pool import DownstreamPool, http_session_factory
 from toolgate_gateway.reviews import PendingReviews
 from toolgate_gateway.settings import GatewaySettings
-from toolgate_gateway.tracing import setup_tracing
+from toolgate_gateway.tracing import setup_tracing, shutdown_tracing
 
 PROG = "toolgate-gateway"
 _MAX_FIELD_CHARS = 300
@@ -91,8 +92,8 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             loc = ".".join(str(p) for p in e["loc"])
             _err(f"setting {loc}: {e['type']}")
         return 2
-    setup_tracing("toolgate-gateway", settings.otlp_endpoint)
     try:
+        setup_tracing("toolgate-gateway", settings.otlp_endpoint)
         asyncio.run(_serve(settings))
     except PolicyError as exc:
         _err(str(exc))
@@ -100,6 +101,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001 - type only: messages may echo values
         _err(f"serve failed ({type(exc).__name__})")
         return 1
+    finally:
+        with contextlib.suppress(Exception):  # best-effort flush at exit
+            shutdown_tracing()
     return 0
 
 

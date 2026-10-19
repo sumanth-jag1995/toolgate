@@ -55,6 +55,14 @@ def span(name: str, **attributes: Any) -> Iterator[Span]:
         yield current
 
 
+def shutdown_tracing() -> None:
+    """Flush and stop the installed provider; a no-op without one."""
+    provider = trace.get_tracer_provider()
+    shutdown = getattr(provider, "shutdown", None)
+    if shutdown is not None:
+        shutdown()
+
+
 def trace_id_of(current: Span) -> str | None:
     """32-hex trace id of ``current``; None for a non-recording (no provider)
     span."""

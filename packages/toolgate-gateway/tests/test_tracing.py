@@ -48,6 +48,10 @@ async def core(tmp_path, memory_factory_cls, build_core_write, write_lockfile):
     await pool.close()
 
 
+def names(exporter):
+    return [s.name for s in exporter.get_finished_spans()]
+
+
 def by_name(exporter):
     return {s.name: s for s in exporter.get_finished_spans()}
 
@@ -67,7 +71,9 @@ async def test_call_span_tree(core, spans):
         "gateway.output_scan",
         "gateway.audit",
     ]
-    for name in stages:
+    assert names(spans).count("gateway.audit") == 1
+    assert names(spans).count("gateway.audit_check") == 1
+    for name in [*stages, "gateway.audit_check"]:
         assert got[name].parent.span_id == root.context.span_id, name
     assert root.attributes["toolgate.decision"] == "allow"
     assert root.attributes["toolgate.client_id"] == "servicing"
@@ -182,3 +188,53 @@ def test_setup_with_endpoint_installs_provider(monkeypatch):
     assert isinstance(provider, TracerProvider)
     assert provider.resource.attributes["service.name"] == "toolgate-gateway"
     provider.shutdown()
+
+
+async def test_audit_down_span(core, spans):
+    core.audit.accepting = False
+    spans.clear()
+    result = await core.call_tool("servicing", "a", NAME, {"claim_id": "C-1"})
+    assert result.isError
+    assert core.audit.records == []
+    got = by_name(spans)
+    assert "gateway.forward" not in got and "gateway.audit" not in got
+    check = got["gateway.audit_check"]
+    assert check.attributes["toolgate.decision"] == "error_audit_down"
+    assert (
+        got["gateway.tools_call"].attributes["toolgate.decision"] == "error_audit_down"
+    )
+
+
+async def test_scan_exception_message_not_in_spans(core, spans, monkeypatch):
+    import toolgate_gateway.core as core_mod
+
+    def boom(*a, **kw):
+        raise RuntimeError(f"leak {SECRET}")
+
+    monkeypatch.setattr(core_mod, "scan_output", boom)
+    spans.clear()
+    result = await core.call_tool("servicing", "a", NAME, {"claim_id": SECRET})
+    assert result.isError
+    [rec] = core.audit.records
+    assert rec.decision == "deny_output"
+    for s in spans.get_finished_spans():
+        assert SECRET not in repr(dict(s.attributes or {}))
+        assert not s.events
+        assert s.status.status_code.name != "ERROR"
+
+
+async def test_pin_verify_exception_not_recorded(core, spans, monkeypatch):
+    from toolgate_pin import Pinner
+
+    def boom(self, *a, **kw):
+        from toolgate_pin.tracing import span
+
+        with span("toolgate.pin.verify"):
+            raise RuntimeError(f"leak {SECRET}")
+
+    monkeypatch.setattr(Pinner, "verify", boom)
+    spans.clear()
+    await core.list_tools("servicing")
+    for s in spans.get_finished_spans():
+        assert SECRET not in repr(dict(s.attributes or {}))
+        assert not [e for e in s.events if e.name == "exception"]
