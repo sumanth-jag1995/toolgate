@@ -1,0 +1,19 @@
+# Grafana Tempo, single binary, local storage (dev only; traces are ephemeral).
+# OTLP/HTTP receiver on 4318 (compose network only); query API on 3200.
+stream_over_http_enabled: true
+server:
+  http_listen_port: 3200
+  log_level: warn
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: "0.0.0.0:4318"
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /tmp/tempo/wal
+    local:
+      path: /tmp/tempo/blocks

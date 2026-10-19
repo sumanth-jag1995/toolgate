@@ -1,6 +1,6 @@
 name: toolgate
 
-# Secrets are interpolated per service from ../.env (run compose with `--env-file ../.env`),
+# Secrets are interpolated per service from .env (run compose from the repo root with `--env-file .env`),
 # so each container only receives the secrets it needs.
 x-mcp-env: &mcp-env
   MOCK_API_URL: http://mock-api:8000
@@ -116,3 +116,103 @@ services:
     command: ["python", "-m", "toolgate_mcp_servers.comms"]
     ports:
       - "127.0.0.1:8103:8103"
+
+  # One-shot: create the gateway schema and the INSERT-only app role. Gets the
+  # admin password (for its DSN) and the app role's password, nothing else.
+  gateway-migrate:
+    build:
+      context: ..
+      dockerfile: packages/toolgate-gateway/Dockerfile
+    environment:
+      GATEWAY_ADMIN_DSN: postgresql://postgres:${POSTGRES_PASSWORD:?run scripts/gen_dev_env.py}@postgres:5432/toolgate
+      GATEWAY_DB_PASSWORD: ${GATEWAY_DB_PASSWORD:?run scripts/gen_dev_env.py --add-missing}
+    command:
+      - toolgate-gateway
+      - migrate
+      - --admin-dsn-env
+      - GATEWAY_ADMIN_DSN
+      - --app-password-env
+      - GATEWAY_DB_PASSWORD
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: packages/toolgate-gateway/Dockerfile
+    environment:
+      GATEWAY_ISSUER: http://localhost:8080/realms/toolgate
+      GATEWAY_JWKS_URL: http://keycloak:8080/realms/toolgate/protocol/openid-connect/certs
+      GATEWAY_TOKEN_URL: http://keycloak:8080/realms/toolgate/protocol/openid-connect/token
+      GATEWAY_CLIENT_ID: toolgate-gateway
+      GATEWAY_CLIENT_SECRET: ${GATEWAY_CLIENT_SECRET:?run scripts/gen_dev_env.py --add-missing}
+      # App role only (INSERT on gateway.audit_log; no UPDATE/DELETE).
+      DATABASE_URL: postgresql://toolgate_gateway_app:${GATEWAY_DB_PASSWORD:?run scripts/gen_dev_env.py --add-missing}@postgres:5432/toolgate
+      AUDIT_HMAC_KEY: ${AUDIT_HMAC_KEY:?run scripts/gen_dev_env.py --add-missing}
+      GATEWAY_LOCKFILE_PATH: /policy/toolgate.lock.json
+      GATEWAY_POLICY_PATH: /policy/agents.yaml
+      GATEWAY_DOWNSTREAMS_PATH: /policy/gateway.yaml
+      GATEWAY_PUBLIC_URL: http://localhost:8200
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4318
+    volumes:
+      # The whole directory, read-only: an edited (atomically replaced)
+      # lockfile is visible to the gateway's hot reload.
+      - ../policy:/policy:ro
+    ports:
+      - "127.0.0.1:8200:8200"
+    depends_on:
+      gateway-migrate:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+      core-read:
+        condition: service_started
+      core-write:
+        condition: service_started
+      comms:
+        condition: service_started
+      tempo:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; socket.create_connection(('127.0.0.1', 8200), 2).close()
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  tempo:
+    image: grafana/tempo:2.10.8
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+    ports:
+      # OTLP/HTTP 4318 stays on the compose network; only the query API is published.
+      - "127.0.0.1:3200:3200"
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Viewers may use Explore (to search traces) but cannot save anything.
+      GF_USERS_VIEWERS_CAN_EDIT: "true"
+      # No interactive or basic-auth logins: the stack is anonymous read-only.
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      # Local dev stack: no update checks, usage reporting or plugin downloads.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    volumes:
+      - ./grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      tempo:
+        condition: service_started

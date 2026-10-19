@@ -1,0 +1,1398 @@
+{
+  "servers": {
+    "comms": {
+      "server_name": "comms",
+      "target": {
+        "command": null,
+        "headers": [
+          "Authorization: Bearer ${TOOLGATE_DEV_TOKEN}"
+        ],
+        "url": "http://localhost:8103/mcp"
+      },
+      "tools": {
+        "schedule_callback": {
+          "approved_at": "2026-10-19T03:27:05+00:00",
+          "approved_by": "Sumanth",
+          "definition": {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": false
+            },
+            "description": "Books a callback to the member in their preferred date and time window and returns the booking. Use when a member asks to be phoned back at a convenient time.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "idempotency_key": {
+                  "description": "Client-generated UUID; retrying with the same key replays the original result",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                  "title": "Idempotency Key",
+                  "type": "string"
+                },
+                "member_id": {
+                  "description": "Member ID, e.g. M-000123",
+                  "pattern": "^M-\\d{6}$",
+                  "title": "Member Id",
+                  "type": "string"
+                },
+                "preferred_date": {
+                  "description": "ISO 8601 date (YYYY-MM-DD), from today up to 30 days ahead",
+                  "format": "date",
+                  "title": "Preferred Date",
+                  "type": "string"
+                },
+                "preferred_window": {
+                  "enum": [
+                    "morning",
+                    "afternoon"
+                  ],
+                  "title": "Preferred Window",
+                  "type": "string"
+                },
+                "reason": {
+                  "enum": [
+                    "claim_query",
+                    "payment_query",
+                    "policy_query",
+                    "complaint"
+                  ],
+                  "title": "Reason",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "member_id",
+                "reason",
+                "preferred_date",
+                "preferred_window",
+                "idempotency_key"
+              ],
+              "title": "schedule_callbackArguments",
+              "type": "object"
+            },
+            "name": "schedule_callback",
+            "outputSchema": {
+              "properties": {
+                "callback_id": {
+                  "title": "Callback Id",
+                  "type": "integer"
+                },
+                "preferred_date": {
+                  "format": "date",
+                  "title": "Preferred Date",
+                  "type": "string"
+                },
+                "preferred_window": {
+                  "enum": [
+                    "morning",
+                    "afternoon"
+                  ],
+                  "title": "Preferred Window",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "callback_id",
+                "preferred_date",
+                "preferred_window"
+              ],
+              "title": "CallbackScheduled",
+              "type": "object"
+            }
+          },
+          "hash": "sha256:ac4155a99cd65de411e5170aabbceabf434852680fd9d51186dda4cf3f513ed2",
+          "override_reason": null,
+          "scan": {
+            "rule_ids": [],
+            "tiers": [
+              "rules"
+            ],
+            "verdict": "benign"
+          }
+        },
+        "send_member_message": {
+          "approved_at": "2026-10-19T03:27:05+00:00",
+          "approved_by": "Sumanth",
+          "definition": {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": false
+            },
+            "description": "Sends a pre-approved template message to the member's contact on file and returns a correspondence ID. Use when a member needs a standard notification such as a claim update or a request for documents.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "claim_id": {
+                  "anyOf": [
+                    {
+                      "description": "Claim ID, e.g. C-000123",
+                      "pattern": "^C-\\d{6}$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "Required for claim_status_update, payment_confirmation and documents_required",
+                  "title": "Claim Id"
+                },
+                "idempotency_key": {
+                  "description": "Client-generated UUID; retrying with the same key replays the original result",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                  "title": "Idempotency Key",
+                  "type": "string"
+                },
+                "member_id": {
+                  "description": "Member ID, e.g. M-000123",
+                  "pattern": "^M-\\d{6}$",
+                  "title": "Member Id",
+                  "type": "string"
+                },
+                "template_id": {
+                  "enum": [
+                    "claim_status_update",
+                    "payment_confirmation",
+                    "documents_required",
+                    "callback_confirmation",
+                    "policy_renewal_reminder"
+                  ],
+                  "title": "Template Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "member_id",
+                "template_id",
+                "idempotency_key"
+              ],
+              "title": "send_member_messageArguments",
+              "type": "object"
+            },
+            "name": "send_member_message",
+            "outputSchema": {
+              "description": "Delivery receipt. The recipient is deliberately omitted.",
+              "properties": {
+                "channel": {
+                  "enum": [
+                    "email",
+                    "sms",
+                    "post",
+                    "phone"
+                  ],
+                  "title": "Channel",
+                  "type": "string"
+                },
+                "correspondence_id": {
+                  "title": "Correspondence Id",
+                  "type": "integer"
+                },
+                "sent_at": {
+                  "format": "date-time",
+                  "title": "Sent At",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "correspondence_id",
+                "channel",
+                "sent_at"
+              ],
+              "title": "MessageSent",
+              "type": "object"
+            }
+          },
+          "hash": "sha256:654137e7a88fd5f84204b4ca2bde930b2d138e7cb32825f69c6fa5fe02745589",
+          "override_reason": null,
+          "scan": {
+            "rule_ids": [],
+            "tiers": [
+              "rules"
+            ],
+            "verdict": "benign"
+          }
+        }
+      }
+    },
+    "core-read": {
+      "server_name": "core-read",
+      "target": {
+        "command": null,
+        "headers": [
+          "Authorization: Bearer ${TOOLGATE_DEV_TOKEN}"
+        ],
+        "url": "http://localhost:8101/mcp"
+      },
+      "tools": {
+        "check_coverage": {
+          "approved_at": "2026-10-19T03:27:01+00:00",
+          "approved_by": "Sumanth",
+          "definition": {
+            "annotations": {
+              "openWorldHint": false,
+              "readOnlyHint": true
+            },
+            "description": "Returns whether a procedure is covered under a policy, with any pre-authorisation requirement and limit. Use when a member asks whether a treatment or procedure is covered.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "policy_id": {
+                  "description": "Policy ID, e.g. P-000123",
+                  "pattern": "^P-\\d{6}$",
+                  "title": "Policy Id",
+                  "type": "string"
+                },
+                "procedure_code": {
+                  "enum": [
+                    "mri_scan",
+                    "ct_scan",
+                    "physiotherapy",
+                    "consultation_specialist",
+                    "cataract_surgery",
+                    "hip_replacement",
+                    "knee_arthroscopy",
+                    "mental_health_therapy",
+                    "dermatology",
+                    "blood_tests"
+                  ],
+                  "title": "Procedure Code",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "policy_id",
+                "procedure_code"
+              ],
+              "title": "check_coverageArguments",
+              "type": "object"
+            },
+            "name": "check_coverage",
+            "outputSchema": {
+              "properties": {
+                "covered": {
+                  "title": "Covered",
+                  "type": "boolean"
+                },
+                "limit_pence": {
+                  "title": "Limit Pence",
+                  "type": "integer"
+                },
+                "policy_id": {
+                  "title": "Policy Id",
+                  "type": "string"
+                },
+                "policy_status": {
+                  "enum": [
+                    "active",
+                    "lapsed",
+                    "cancelled"
+                  ],
+                  "title": "Policy Status",
+                  "type": "string"
+                },
+                "procedure_code": {
+                  "enum": [
+                    "mri_scan",
+                    "ct_scan",
+                    "physiotherapy",
+                    "consultation_specialist",
+                    "cataract_surgery",
+                    "hip_replacement",
+                    "knee_arthroscopy",
+                    "mental_health_therapy",
+                    "dermatology",
+                    "blood_tests"
+                  ],
+                  "title": "Procedure Code",
+                  "type": "string"
+                },
+                "requires_preauth": {
+                  "title": "Requires Preauth",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "policy_id",
+                "procedure_code",
+                "covered",
+                "requires_preauth",
+                "limit_pence",
+                "policy_status"
+              ],
+              "title": "CoverageResult",
+              "type": "object"
+            }
+          },
+          "hash": "sha256:a56506c6f312abb8261a250dba585482ccaacb422f070181dea198350e0557ed",
+          "override_reason": null,
+          "scan": {
+            "rule_ids": [],
+            "tiers": [
+              "rules"
+            ],
+            "verdict": "benign"
+          }
+        },
+        "get_claim_status": {
+          "approved_at": "2026-10-19T03:27:01+00:00",
+          "approved_by": "Sumanth",
+          "definition": {
+            "annotations": {
+              "openWorldHint": false,
+              "readOnlyHint": true
+            },
+            "description": "Returns a claim's status, amount, dates, its three most recent notes and its payments. Use when a member asks whether their claim has progressed.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "claim_id": {
+                  "description": "Claim ID, e.g. C-000123",
+                  "pattern": "^C-\\d{6}$",
+                  "title": "Claim Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "claim_id"
+              ],
+              "title": "get_claim_statusArguments",
+              "type": "object"
+            },
+            "name": "get_claim_status",
+            "outputSchema": {
+              "$defs": {
+                "ClaimNote": {
+                  "properties": {
+                    "author_client": {
+                      "title": "Author Client",
+                      "type": "string"
+                    },
+                    "body": {
+                      "title": "Body",
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "format": "date-time",
+                      "title": "Created At",
+                      "type": "string"
+                    },
+                    "note_type": {
+                      "enum": [
+                        "customer_contact",
+                        "document_received",
+                        "escalation"
+                      ],
+                      "title": "Note Type",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "note_type",
+                    "body",
+                    "author_client",
+                    "created_at"
+                  ],
+                  "title": "ClaimNote",
+                  "type": "object"
+                },
+                "Payment": {
+                  "properties": {
+                    "amount_pence": {
+                      "title": "Amount Pence",
+                      "type": "integer"
+                    },
+                    "claim_id": {
+                      "title": "Claim Id",
+                      "type": "string"
+                    },
+                    "paid_at": {
+                      "anyOf": [
+                        {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Paid At"
+                    },
+                    "payment_id": {
+                      "title": "Payment Id",
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "scheduled",
+                        "sent",
+                        "failed"
+                      ],
+                      "title": "Status",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "payment_id",
+                    "claim_id",
+                    "amount_pence",
+                    "status",
+                    "paid_at"
+                  ],
+                  "title": "Payment",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "amount_pence": {
+                  "title": "Amount Pence",
+                  "type": "integer"
+                },
+                "claim_id": {
+                  "title": "Claim Id",
+                  "type": "string"
+                },
+                "incident_date": {
+                  "format": "date",
+                  "title": "Incident Date",
+                  "type": "string"
+                },
+                "member_id": {
+                  "title": "Member Id",
+                  "type": "string"
+                },
+                "notes": {
+                  "description": "Most recent notes, at most 3, oldest first",
+                  "items": {
+                    "$ref": "#/$defs/ClaimNote"
+                  },
+                  "title": "Notes",
+                  "type": "array"
+                },
+                "payments": {
+                  "items": {
+                    "$ref": "#/$defs/Payment"
+                  },
+                  "title": "Payments",
+                  "type": "array"
+                },
+                "policy_id": {
+                  "title": "Policy Id",
+                  "type": "string"
+                },
+                "procedure_code": {
+                  "enum": [
+                    "mri_scan",
+                    "ct_scan",
+                    "physiotherapy",
+                    "consultation_specialist",
+                    "cataract_surgery",
+                    "hip_replacement",
+                    "knee_arthroscopy",
+                    "mental_health_therapy",
+                    "dermatology",
+                    "blood_tests"
+                  ],
+                  "title": "Procedure Code",
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "received",
+                    "in_review",
+                    "approved",
+                    "rejected",
+                    "paid"
+                  ],
+                  "title": "Status",
+                  "type": "string"
+                },
+                "submitted_at": {
+                  "format": "date-time",
+                  "title": "Submitted At",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "claim_id",
+                "policy_id",
+                "member_id",
+                "procedure_code",
+                "status",
+                "amount_pence",
+                "incident_date",
+                "submitted_at",
+                "notes",
+                "payments"
+              ],
+              "title": "ClaimStatusResult",
+              "type": "object"
+            }
+          },
+          "hash": "sha256:28dba48f2fb8dde129792b148a1f0409a478dc6d5f729986c11ea70338feb591",
+          "override_reason": null,
+          "scan": {
+            "rule_ids": [],
+            "tiers": [
+              "rules"
+            ],
+            "verdict": "benign"
+          }
+        },
+        "get_correspondence_history": {
+          "approved_at": "2026-10-19T03:27:01+00:00",
+          "approved_by": "Sumanth",
+          "definition": {
+            "annotations": {
+              "openWorldHint": false,
+              "readOnlyHint": true
+            },
+            "description": "Returns the messages most recently sent to a member, with channel, template and subject. Use when you need to know what the member has already been told.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "limit": {
+                  "default": 10,
+                  "description": "Maximum number of items to return (1-20)",
+                  "maximum": 20,
+                  "minimum": 1,
+                  "title": "Limit",
+                  "type": "integer"
+                },
+                "member_id": {
+                  "description": "Member ID, e.g. M-000123",
+                  "pattern": "^M-\\d{6}$",
+                  "title": "Member Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "member_id"
+              ],
+              "title": "get_correspondence_historyArguments",
+              "type": "object"
+            },
+            "name": "get_correspondence_history",
+            "outputSchema": {
+              "$defs": {
+                "CorrespondenceItem": {
+                  "properties": {
+                    "channel": {
+                      "enum": [
+                        "email",
+                        "sms",
+                        "post",
+                        "phone"
+                      ],
+                      "title": "Channel",
+                      "type": "string"
+                    },
+                    "correspondence_id": {
+                      "title": "Correspondence Id",
+                      "type": "integer"
+                    },
+                    "recipient": {
+                      "title": "Recipient",
+                      "type": "string"
+                    },
+                    "sent_at": {
+                      "format": "date-time",
+                      "title": "Sent At",
+                      "type": "string"
+                    },
+                    "subject": {
+                      "title": "Subject",
+                      "type": "string"
+                    },
+                    "template": {
+                      "title": "Template",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "correspondence_id",
+                    "channel",
+                    "template",
+                    "recipient",
+                    "subject",
+                    "sent_at"
+                  ],
+                  "title": "CorrespondenceItem",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "correspondence": {
+                  "items": {
+                    "$ref": "#/$defs/CorrespondenceItem"
+                  },
+                  "title": "Correspondence",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "correspondence"
+              ],
+              "title": "CorrespondenceList",
+              "type": "object"
+            }
+          },
+          "hash": "sha256:3250c72e7bd256371da32bb9a24653920f22b98bf8346c4d9a2c2d7b5600920d",
+          "override_reason": null,
+          "scan": {
+            "rule_ids": [],
+            "tiers": [
+              "rules"
+            ],
+            "verdict": "benign"
+          }
+        },
+        "get_member_profile": {
+          "approved_at": "2026-10-19T03:27:01+00:00",
+          "approved_by": "Sumanth",
+          "definition": {
+            "annotations": {
+              "openWorldHint": false,
+              "readOnlyHint": true
+            },
+            "description": "Returns a member's name, date of birth, contact details, contact preference and policy IDs. Use when you need to identify a member or find which policies they hold.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "member_id": {
+                  "description": "Member ID, e.g. M-000123",
+                  "pattern": "^M-\\d{6}$",
+                  "title": "Member Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "member_id"
+              ],
+              "title": "get_member_profileArguments",
+              "type": "object"
+            },
+            "name": "get_member_profile",
+            "outputSchema": {
+              "properties": {
+                "contact_preference": {
+                  "enum": [
+                    "email",
+                    "sms",
+                    "post",
+                    "phone"
+                  ],
+                  "title": "Contact Preference",
+                  "type": "string"
+                },
+                "dob": {
+                  "format": "date",
+                  "title": "Dob",
+                  "type": "string"
+                },
+                "email": {
+                  "title": "Email",
+                  "type": "string"
+                },
+                "member_id": {
+                  "title": "Member Id",
+                  "type": "string"
+                },
+                "membership_number": {
+                  "title": "Membership Number",
+                  "type": "string"
+                },
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "phone": {
+                  "title": "Phone",
+                  "type": "string"
+                },
+                "policy_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Policy Ids",
+                  "type": "array"
+                },
+                "postcode": {
+                  "title": "Postcode",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "member_id",
+                "membership_number",
+                "name",
+                "dob",
+                "email",
+                "phone",
+                "postcode",
+                "contact_preference",
+                "policy_ids"
+              ],
+              "title": "MemberProfile",
+              "type": "object"
+            }
+          },
+          "hash": "sha256:62214151af713bc59082944a6f14f35e741a242fd845974ae7846988667ce9cc",
+          "override_reason": null,
+          "scan": {
+            "rule_ids": [],
+            "tiers": [
+              "rules"
+            ],
+            "verdict": "benign"
+          }
+        },
+        "get_payment_history": {
+          "approved_at": "2026-10-19T03:27:01+00:00",
+          "approved_by": "Sumanth",
+          "definition": {
+            "annotations": {
+              "openWorldHint": false,
+              "readOnlyHint": true
+            },
+            "description": "Returns a member's most recent payments across all their claims. Use when a member asks whether or when they have been paid.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "limit": {
+                  "default": 10,
+                  "description": "Maximum number of items to return (1-20)",
+                  "maximum": 20,
+                  "minimum": 1,
+                  "title": "Limit",
+                  "type": "integer"
+                },
+                "member_id": {
+                  "description": "Member ID, e.g. M-000123",
+                  "pattern": "^M-\\d{6}$",
+                  "title": "Member Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "member_id"
+              ],
+              "title": "get_payment_historyArguments",
+              "type": "object"
+            },
+            "name": "get_payment_history",
+            "outputSchema": {
+              "$defs": {
+                "Payment": {
+                  "properties": {
+                    "amount_pence": {
+                      "title": "Amount Pence",
+                      "type": "integer"
+                    },
+                    "claim_id": {
+                      "title": "Claim Id",
+                      "type": "string"
+                    },
+                    "paid_at": {
+                      "anyOf": [
+                        {
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Paid At"
+                    },
+                    "payment_id": {
+                      "title": "Payment Id",
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "scheduled",
+                        "sent",
+                        "failed"
+                      ],
+                      "title": "Status",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "payment_id",
+                    "claim_id",
+                    "amount_pence",
+                    "status",
+                    "paid_at"
+                  ],
+                  "title": "Payment",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "payments": {
+                  "items": {
+                    "$ref": "#/$defs/Payment"
+                  },
+                  "title": "Payments",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "payments"
+              ],
+              "title": "PaymentList",
+              "type": "object"
+            }
+          },
+          "hash": "sha256:ee3d6da5ceec24efd4bbe8995c5f89249e9edbbf80e8146d82df1262b04e1332",
+          "override_reason": null,
+          "scan": {
+            "rule_ids": [],
+            "tiers": [
+              "rules"
+            ],
+            "verdict": "benign"
+          }
+        },
+        "get_policy_details": {
+          "approved_at": "2026-10-19T03:27:01+00:00",
+          "approved_by": "Sumanth",
+          "definition": {
+            "annotations": {
+              "openWorldHint": false,
+              "readOnlyHint": true
+            },
+            "description": "Returns a policy's product, status, start and renewal dates, excess and annual limit. Use when a member asks about the terms or status of their policy.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "policy_id": {
+                  "description": "Policy ID, e.g. P-000123",
+                  "pattern": "^P-\\d{6}$",
+                  "title": "Policy Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "policy_id"
+              ],
+              "title": "get_policy_detailsArguments",
+              "type": "object"
+            },
+            "name": "get_policy_details",
+            "outputSchema": {
+              "properties": {
+                "annual_limit_pence": {
+                  "title": "Annual Limit Pence",
+                  "type": "integer"
+                },
+                "excess_pence": {
+                  "title": "Excess Pence",
+                  "type": "integer"
+                },
+                "member_id": {
+                  "title": "Member Id",
+                  "type": "string"
+                },
+                "policy_id": {
+                  "title": "Policy Id",
+                  "type": "string"
+                },
+                "product": {
+                  "enum": [
+                    "core",
+                    "plus",
+                    "premier"
+                  ],
+                  "title": "Product",
+                  "type": "string"
+                },
+                "renewal_date": {
+                  "format": "date",
+                  "title": "Renewal Date",
+                  "type": "string"
+                },
+                "start_date": {
+                  "format": "date",
+                  "title": "Start Date",
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "active",
+                    "lapsed",
+                    "cancelled"
+                  ],
+                  "title": "Status",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "policy_id",
+                "member_id",
+                "product",
+                "status",
+                "start_date",
+                "renewal_date",
+                "excess_pence",
+                "annual_limit_pence"
+              ],
+              "title": "PolicyDetails",
+              "type": "object"
+            }
+          },
+          "hash": "sha256:b0b2220faae28f1187cb17afa164e37e43409fa65aea558a3eb1b917495286ff",
+          "override_reason": null,
+          "scan": {
+            "rule_ids": [],
+            "tiers": [
+              "rules"
+            ],
+            "verdict": "benign"
+          }
+        },
+        "list_member_claims": {
+          "approved_at": "2026-10-19T03:27:01+00:00",
+          "approved_by": "Sumanth",
+          "definition": {
+            "annotations": {
+              "openWorldHint": false,
+              "readOnlyHint": true
+            },
+            "description": "Returns a member's claims, newest first, optionally filtered by status. Use when you need to find a member's claims or see which are still open.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "limit": {
+                  "default": 10,
+                  "description": "Maximum number of items to return (1-20)",
+                  "maximum": 20,
+                  "minimum": 1,
+                  "title": "Limit",
+                  "type": "integer"
+                },
+                "member_id": {
+                  "description": "Member ID, e.g. M-000123",
+                  "pattern": "^M-\\d{6}$",
+                  "title": "Member Id",
+                  "type": "string"
+                },
+                "status": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "received",
+                        "in_review",
+                        "approved",
+                        "rejected",
+                        "paid"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "Only return claims with this status",
+                  "title": "Status"
+                }
+              },
+              "required": [
+                "member_id"
+              ],
+              "title": "list_member_claimsArguments",
+              "type": "object"
+            },
+            "name": "list_member_claims",
+            "outputSchema": {
+              "$defs": {
+                "ClaimSummary": {
+                  "properties": {
+                    "amount_pence": {
+                      "title": "Amount Pence",
+                      "type": "integer"
+                    },
+                    "claim_id": {
+                      "title": "Claim Id",
+                      "type": "string"
+                    },
+                    "incident_date": {
+                      "format": "date",
+                      "title": "Incident Date",
+                      "type": "string"
+                    },
+                    "policy_id": {
+                      "title": "Policy Id",
+                      "type": "string"
+                    },
+                    "procedure_code": {
+                      "enum": [
+                        "mri_scan",
+                        "ct_scan",
+                        "physiotherapy",
+                        "consultation_specialist",
+                        "cataract_surgery",
+                        "hip_replacement",
+                        "knee_arthroscopy",
+                        "mental_health_therapy",
+                        "dermatology",
+                        "blood_tests"
+                      ],
+                      "title": "Procedure Code",
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "received",
+                        "in_review",
+                        "approved",
+                        "rejected",
+                        "paid"
+                      ],
+                      "title": "Status",
+                      "type": "string"
+                    },
+                    "submitted_at": {
+                      "format": "date-time",
+                      "title": "Submitted At",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "claim_id",
+                    "policy_id",
+                    "procedure_code",
+                    "status",
+                    "amount_pence",
+                    "incident_date",
+                    "submitted_at"
+                  ],
+                  "title": "ClaimSummary",
+                  "type": "object"
+                }
+              },
+              "properties": {
+                "claims": {
+                  "items": {
+                    "$ref": "#/$defs/ClaimSummary"
+                  },
+                  "title": "Claims",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "claims"
+              ],
+              "title": "ClaimList",
+              "type": "object"
+            }
+          },
+          "hash": "sha256:ce1d8f2b70956a8830eff4eedd70f668f2e28d520fd4f36683383dba48293f1f",
+          "override_reason": null,
+          "scan": {
+            "rule_ids": [],
+            "tiers": [
+              "rules"
+            ],
+            "verdict": "benign"
+          }
+        }
+      }
+    },
+    "core-write": {
+      "server_name": "core-write",
+      "target": {
+        "command": null,
+        "headers": [
+          "Authorization: Bearer ${TOOLGATE_DEV_TOKEN}"
+        ],
+        "url": "http://localhost:8102/mcp"
+      },
+      "tools": {
+        "add_claim_note": {
+          "approved_at": "2026-10-19T03:27:03+00:00",
+          "approved_by": "Sumanth",
+          "definition": {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": false
+            },
+            "description": "Adds a note to an existing claim and returns the saved note. Use when a case-handling detail needs to be recorded against a claim.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "maxLength": 1000,
+                  "minLength": 1,
+                  "title": "Body",
+                  "type": "string"
+                },
+                "claim_id": {
+                  "description": "Claim ID, e.g. C-000123",
+                  "pattern": "^C-\\d{6}$",
+                  "title": "Claim Id",
+                  "type": "string"
+                },
+                "idempotency_key": {
+                  "description": "Client-generated UUID; retrying with the same key replays the original result",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                  "title": "Idempotency Key",
+                  "type": "string"
+                },
+                "note_type": {
+                  "enum": [
+                    "customer_contact",
+                    "document_received",
+                    "escalation"
+                  ],
+                  "title": "Note Type",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "claim_id",
+                "note_type",
+                "body",
+                "idempotency_key"
+              ],
+              "title": "add_claim_noteArguments",
+              "type": "object"
+            },
+            "name": "add_claim_note",
+            "outputSchema": {
+              "properties": {
+                "claim_id": {
+                  "title": "Claim Id",
+                  "type": "string"
+                },
+                "note_id": {
+                  "title": "Note Id",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "note_id",
+                "claim_id"
+              ],
+              "title": "NoteAdded",
+              "type": "object"
+            }
+          },
+          "hash": "sha256:9c124c989ec2fef8e2cfd883c645fc46f4f8dd8f6297cf1fbb42a566a93a1087",
+          "override_reason": null,
+          "scan": {
+            "rule_ids": [],
+            "tiers": [
+              "rules"
+            ],
+            "verdict": "benign"
+          }
+        },
+        "log_claim": {
+          "approved_at": "2026-10-19T03:27:03+00:00",
+          "approved_by": "Sumanth",
+          "definition": {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": false
+            },
+            "description": "Creates a new claim with status received on a member's active policy and returns its claim ID. Use when a member wants to submit a claim for a treatment.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "amount_pence": {
+                  "description": "Claim amount in pence (1-5,000,000)",
+                  "maximum": 5000000,
+                  "minimum": 1,
+                  "title": "Amount Pence",
+                  "type": "integer"
+                },
+                "idempotency_key": {
+                  "description": "Client-generated UUID; retrying with the same key replays the original result",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                  "title": "Idempotency Key",
+                  "type": "string"
+                },
+                "incident_date": {
+                  "description": "Date of treatment, ISO 8601 (YYYY-MM-DD); not in the future",
+                  "format": "date",
+                  "title": "Incident Date",
+                  "type": "string"
+                },
+                "member_id": {
+                  "description": "Member ID, e.g. M-000123",
+                  "pattern": "^M-\\d{6}$",
+                  "title": "Member Id",
+                  "type": "string"
+                },
+                "policy_id": {
+                  "description": "Policy ID, e.g. P-000123",
+                  "pattern": "^P-\\d{6}$",
+                  "title": "Policy Id",
+                  "type": "string"
+                },
+                "procedure_code": {
+                  "enum": [
+                    "mri_scan",
+                    "ct_scan",
+                    "physiotherapy",
+                    "consultation_specialist",
+                    "cataract_surgery",
+                    "hip_replacement",
+                    "knee_arthroscopy",
+                    "mental_health_therapy",
+                    "dermatology",
+                    "blood_tests"
+                  ],
+                  "title": "Procedure Code",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "member_id",
+                "policy_id",
+                "procedure_code",
+                "incident_date",
+                "amount_pence",
+                "idempotency_key"
+              ],
+              "title": "log_claimArguments",
+              "type": "object"
+            },
+            "name": "log_claim",
+            "outputSchema": {
+              "properties": {
+                "claim_id": {
+                  "title": "Claim Id",
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "received",
+                    "in_review",
+                    "approved",
+                    "rejected",
+                    "paid"
+                  ],
+                  "title": "Status",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "claim_id",
+                "status"
+              ],
+              "title": "ClaimCreated",
+              "type": "object"
+            }
+          },
+          "hash": "sha256:f93fa8150e66df88b26b092585b0f482c2a05f8c580c7b5df8b5c9bdb3c5de70",
+          "override_reason": null,
+          "scan": {
+            "rule_ids": [],
+            "tiers": [
+              "rules"
+            ],
+            "verdict": "benign"
+          }
+        },
+        "update_contact_preference": {
+          "approved_at": "2026-10-19T03:27:03+00:00",
+          "approved_by": "Sumanth",
+          "definition": {
+            "annotations": {
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false,
+              "readOnlyHint": false
+            },
+            "description": "Sets a member's preferred contact channel and returns the updated preference. Use when a member asks to be contacted by a different channel.",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "idempotency_key": {
+                  "description": "Client-generated UUID; retrying with the same key replays the original result",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                  "title": "Idempotency Key",
+                  "type": "string"
+                },
+                "member_id": {
+                  "description": "Member ID, e.g. M-000123",
+                  "pattern": "^M-\\d{6}$",
+                  "title": "Member Id",
+                  "type": "string"
+                },
+                "preference": {
+                  "enum": [
+                    "email",
+                    "sms",
+                    "post",
+                    "phone"
+                  ],
+                  "title": "Preference",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "member_id",
+                "preference",
+                "idempotency_key"
+              ],
+              "title": "update_contact_preferenceArguments",
+              "type": "object"
+            },
+            "name": "update_contact_preference",
+            "outputSchema": {
+              "properties": {
+                "contact_preference": {
+                  "enum": [
+                    "email",
+                    "sms",
+                    "post",
+                    "phone"
+                  ],
+                  "title": "Contact Preference",
+                  "type": "string"
+                },
+                "member_id": {
+                  "title": "Member Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "member_id",
+                "contact_preference"
+              ],
+              "title": "ContactPreferenceUpdated",
+              "type": "object"
+            }
+          },
+          "hash": "sha256:2f4b9c8d42518beb9344d187dadc84e7ef5ec6a7480577055ae482694fac4a08",
+          "override_reason": null,
+          "scan": {
+            "rule_ids": [],
+            "tiers": [
+              "rules"
+            ],
+            "verdict": "benign"
+          }
+        }
+      }
+    }
+  },
+  "version": 1
+}
