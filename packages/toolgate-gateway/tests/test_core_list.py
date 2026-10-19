@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import logging
 
 import pytest
@@ -378,3 +379,108 @@ async def test_superseded_refresh_skips_reviews_and_snapshot(tmp_path):
     assert set(core.snapshot) == {"srv.lookup"}
     assert reviews.records == []  # the older one's "sneaky" is not recorded
     assert len(reviews.resolved_with) == 1  # and it does not resolve
+
+
+async def test_unusable_deep_pinned_schema_omits_only_that_tool(tmp_path, caplog):
+    """A pinned definition whose schema is nested 2000 deep (the hash still
+    matches the live tool) cannot be compiled (RecursionError): that tool is
+    omitted with a warning naming the error type; the others are listed."""
+    lock = tmp_path / "toolgate.lock.json"
+    shallow = {"name": "deep", "inputSchema": {"type": "object"}}
+    sp = pin_server(
+        "srv",
+        "crafted",
+        Target(url="http://srv.test/mcp"),
+        [PINNED_LOOKUP, shallow],
+        approved_by="test",
+    )
+    LockfileStore(lock).save(PinSet({}).with_server(sp))
+    pins = PinSource(lock)
+    pinset, pinner = pins.state()
+    nested: dict = {"type": "string"}
+    for _ in range(2000):
+        nested = {"type": "object", "properties": {"a": nested}}
+    srv = pinset.get("srv")
+    deep_pin = dataclasses.replace(
+        srv.tools["deep"],
+        definition={"name": "deep", "inputSchema": nested},
+    )
+    tampered = PinSet({}).with_server(
+        dataclasses.replace(srv, tools={**srv.tools, "deep": deep_pin})
+    )
+    pins.state = lambda: (tampered, pinner)
+    live = [Tool.model_validate(PINNED_LOOKUP), Tool.model_validate(shallow)]
+    core = GatewayCore(
+        FakePool([(None, live)]),
+        pins,
+        Allowlist({"a": ("srv.*",)}),
+        object(),
+        FakeReviews(),
+        hmac_key="k" * 32,
+    )
+    with caplog.at_level(logging.WARNING, logger="toolgate_gateway.core"):
+        assert names(await core.list_tools("a")) == {"srv.lookup"}
+    assert "RecursionError" in caplog.text
+
+
+class CountingPool:
+    """Wraps a pool, counting list_tools per server; each list yields to the
+    loop first so concurrent refreshes would overlap."""
+
+    def __init__(self, pool):
+        self._pool = pool
+        self.server_ids = pool.server_ids
+        self.lists: dict[str, int] = {}
+
+    async def list_tools(self, server_id):
+        self.lists[server_id] = self.lists.get(server_id, 0) + 1
+        await asyncio.sleep(0.01)
+        return await self._pool.list_tools(server_id)
+
+
+async def test_concurrent_lists_share_one_refresh(
+    tmp_path, write_lock, memory_factory_cls, builders
+):
+    lock = tmp_path / "toolgate.lock.json"
+    await write_lock(lock)
+    pool = DownstreamPool(CONFIGS, memory_factory_cls(builders))
+    await pool.start()
+    try:
+        counting = CountingPool(pool)
+        core = GatewayCore(
+            counting, PinSource(lock), ALLOWLIST, object(), None, hmac_key="k" * 32
+        )
+        results = await asyncio.gather(
+            *(core.list_tools("servicing") for _ in range(10))
+        )
+        assert all(names(r) == READ_ALL for r in results)
+        assert counting.lists == {"core-read": 1, "core-write": 1}
+        # Once it finished, the next list refreshes again.
+        await core.list_tools("servicing")
+        assert counting.lists == {"core-read": 2, "core-write": 2}
+    finally:
+        await pool.close()
+
+
+async def test_cancelled_first_lister_does_not_cancel_shared_refresh(
+    tmp_path, write_lock, memory_factory_cls, builders
+):
+    lock = tmp_path / "toolgate.lock.json"
+    await write_lock(lock)
+    pool = DownstreamPool(CONFIGS, memory_factory_cls(builders))
+    await pool.start()
+    try:
+        counting = CountingPool(pool)
+        core = GatewayCore(
+            counting, PinSource(lock), ALLOWLIST, object(), None, hmac_key="k" * 32
+        )
+        first = asyncio.create_task(core.list_tools("servicing"))
+        second = asyncio.create_task(core.list_tools("servicing"))
+        await asyncio.sleep(0)
+        first.cancel()
+        assert names(await second) == READ_ALL
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert counting.lists == {"core-read": 1, "core-write": 1}
+    finally:
+        await pool.close()

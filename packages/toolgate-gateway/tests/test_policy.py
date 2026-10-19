@@ -89,3 +89,15 @@ def test_duplicate_downstream_rejected(tmp_path):
     )
     with pytest.raises(PolicyError):
         load_downstreams(f)
+
+
+def test_downstream_id_with_trailing_newline_rejected(tmp_path):
+    f = tmp_path / "g.yaml"
+    # YAML "\n" escape: the parsed id is "core-read" plus a newline, which
+    # re.match with "$" would accept.
+    f.write_text(
+        'downstreams:\n  - server_id: "core-read\\n"\n    url: http://x/mcp\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(PolicyError):
+        load_downstreams(f)

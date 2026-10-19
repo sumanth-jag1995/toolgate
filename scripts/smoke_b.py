@@ -209,6 +209,19 @@ async def main() -> None:
         except Exception as exc:  # noqa: BLE001
             check("servicing get_member_profile", False, type(exc).__name__)
 
+        # 2b. A clean allowed call: audited as `allow` (checked in 7).
+        try:
+            async with gateway(servicing) as session:
+                res = await session.call_tool(
+                    "core-read.get_claim_status", {"claim_id": "C-900001"}
+                )
+            check(
+                "servicing core-read.get_claim_status returns the claim",
+                not res.isError and "C-900001" in result_text(res),
+            )
+        except Exception as exc:  # noqa: BLE001
+            check("servicing get_claim_status", False, type(exc).__name__)
+
         # 3. fraud-triage may not call core-write.log_claim.
         try:
             async with gateway(fraud) as session:
@@ -293,19 +306,19 @@ async def main() -> None:
         f"exit {proc.returncode}; {lines[0][:70] if lines else 'no output'}",
     )
 
-    # 7. The audit log grew by one row per audited call (3 tools/call above),
+    # 7. The audit log grew by one row per audited call (4 tools/call above),
     #    with the expected decisions, and the app role cannot alter it.
     rows: list[asyncpg.Record] = []
     for _ in range(30):  # the writer flushes every 100 ms
         rows = await audit_rows_after(dsn, max_id_before)
-        if len(rows) >= 3:
+        if len(rows) >= 4:
             break
         await asyncio.sleep(0.2)
     count_after, _ = await audit_state(dsn)
     decisions = {(r["client_id"], r["tool"], r["decision"]) for r in rows}
     check(
         "gateway.audit_log count grew",
-        count_after >= count_before + 3,
+        count_after >= count_before + 4,
         f"{count_before} -> {count_after}",
     )
     profile = "core-read.get_member_profile"
@@ -321,6 +334,16 @@ async def main() -> None:
         }
         <= decisions,
         ", ".join(sorted(d for _, _, d in decisions)),
+    )
+    claim_rows = [
+        r["decision"]
+        for r in rows
+        if (r["client_id"], r["tool"]) == ("servicing", "core-read.get_claim_status")
+    ]
+    check(
+        "clean get_claim_status audit row decision is allow",
+        claim_rows == ["allow"],
+        ", ".join(claim_rows) or "no row",
     )
     check(
         "audit rows store only an args HMAC",

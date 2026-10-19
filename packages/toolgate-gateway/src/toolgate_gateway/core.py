@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError, best_match
+from jsonschema.exceptions import best_match
 from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult, TextContent, Tool
 from opentelemetry import trace
@@ -253,12 +253,16 @@ class GatewayCore:
         self._compiled_for: PinSet | None = None
         self._started = 0  # refresh generations
         self._applied = 0
+        # The in-flight refresh shared by concurrent tools/list callers.
+        self._shared: asyncio.Task[tuple[dict[str, SnapshotEntry], int]] | None
+        self._shared = None
 
     # -- public ------------------------------------------------------------
 
     async def list_tools(self, client_id: str) -> list[Tool]:
         with span("gateway.tools_list", **{"toolgate.client_id": client_id}) as root:
-            snapshot = await self._refresh()
+            snapshot, quarantined = await self._shared_refresh()
+            root.set_attribute("toolgate.quarantined_count", quarantined)
             tools = [
                 e.tool.model_copy(update={"name": name})
                 for name, e in snapshot.items()
@@ -268,7 +272,29 @@ class GatewayCore:
             return tools
 
     async def refresh_snapshot(self) -> None:
-        await self._refresh()
+        """A fresh refresh (startup, list_changed): never joins one already in
+        flight, which may have listed before the change."""
+        _, quarantined = await self._refresh()
+        trace.get_current_span().set_attribute(
+            "toolgate.quarantined_count", quarantined
+        )
+
+    async def _shared_refresh(self) -> tuple[dict[str, SnapshotEntry], int]:
+        """Concurrent tools/list callers share one in-flight refresh. It runs
+        in its own task (in the first caller's trace context), so a caller's
+        cancellation does not cancel it for the others."""
+        task = self._shared
+        if task is None:
+            task = asyncio.create_task(self._refresh())
+            self._shared = task
+            task.add_done_callback(self._shared_done)
+        return await asyncio.shield(task)
+
+    def _shared_done(self, task: asyncio.Task[Any]) -> None:
+        if self._shared is task:
+            self._shared = None
+        if not task.cancelled():
+            task.exception()  # retrieved: every caller may have gone
 
     async def call_tool(
         self,
@@ -432,7 +458,8 @@ class GatewayCore:
 
     # -- refresh -----------------------------------------------------------
 
-    async def _refresh(self) -> dict[str, SnapshotEntry]:
+    async def _refresh(self) -> tuple[dict[str, SnapshotEntry], int]:
+        """Refresh the snapshot: ``(snapshot, quarantined count)``."""
         self._started += 1
         generation = self._started
         state = self.pins.state()
@@ -447,14 +474,11 @@ class GatewayCore:
             snapshot, inventory, quarantines, quarantined = await self._build(
                 pinset, pinner
             )
-        trace.get_current_span().set_attribute(
-            "toolgate.quarantined_count", quarantined
-        )
 
         # A slower, older refresh never overwrites a newer one, and its
         # (outdated) review bookkeeping is skipped.
         if generation <= self._applied:
-            return self.snapshot
+            return self.snapshot, quarantined
         self._applied = generation
         self.snapshot = snapshot
         self.inventory = inventory
@@ -463,7 +487,7 @@ class GatewayCore:
             self._alert(server_id, q)
         if self.reviews is not None and pinset is not None:
             await self._update_reviews(generation, pinset, quarantines)
-        return snapshot
+        return snapshot, quarantined
 
     async def _build(
         self, pinset: PinSet, pinner: Pinner
@@ -532,7 +556,7 @@ class GatewayCore:
             try:
                 served = Tool.model_validate(pin.definition)
                 validator = compile_validator(served.inputSchema)
-            except (ValueError, SchemaError) as exc:
+            except Exception as exc:  # noqa: BLE001 - incl. SchemaError, RecursionError
                 log.warning(
                     "pinned definition of %r (hash %s) is unusable (%s); "
                     "omitting the tool",

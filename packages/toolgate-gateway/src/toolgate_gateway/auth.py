@@ -6,8 +6,9 @@ The agent's token is never forwarded.
 """
 
 import asyncio
+import threading
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 import anyio.to_thread
@@ -20,6 +21,11 @@ class DownstreamAuthError(Exception):
     """Token acquisition for downstream calls failed. Message: status or type only."""
 
 
+# An unknown kid refetches the JWKS at most once per this many seconds, so
+# tokens with random kids cannot make the gateway hammer the IdP.
+UNKNOWN_KID_REFETCH_INTERVAL_S = 10.0
+
+
 class AgentTokenVerifier(TokenVerifier):
     def __init__(
         self,
@@ -28,25 +34,53 @@ class AgentTokenVerifier(TokenVerifier):
         jwks_url: str,
         *,
         jwk_client: Any | None = None,
+        refetch_interval_s: float = UNKNOWN_KID_REFETCH_INTERVAL_S,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._issuer = issuer
         self._audience = audience
         self._jwk_client = jwk_client or jwt.PyJWKClient(jwks_url)
+        self._refetch_interval = refetch_interval_s
+        self._clock = clock
         # PyJWKClient drops its JWK-set cache after 300 s, so on its own an IdP outage
-        # would fail every token. Remember the last good key per kid and fall back to
-        # it only when the JWKS fetch itself fails.
+        # would fail every token. Remember the key set of the last successful fetch
+        # (rebuilt on each one, so rotated-out kids go) and fall back to it only when
+        # the JWKS fetch itself fails.
         self._last_good: dict[str, Any] = {}
+        self._last_refetch: float | None = None
+        self._lock = threading.Lock()  # _signing_key runs in worker threads
+
+    def _remember(self, keys: list[Any], kid: str) -> Any | None:
+        good = {k.key_id: k for k in keys if isinstance(k.key_id, str)}
+        with self._lock:
+            self._last_good = good
+        return good.get(kid)
 
     def _signing_key(self, token: str) -> Any:
         kid = jwt.get_unverified_header(token).get("kid")
+        if not isinstance(kid, str) or not kid:
+            raise jwt.InvalidTokenError("token has no kid")
         try:
-            key = self._jwk_client.get_signing_key_from_jwt(token)
+            keys = self._jwk_client.get_signing_keys()
         except jwt.PyJWKClientConnectionError:
-            if isinstance(kid, str) and kid in self._last_good:
-                return self._last_good[kid]
-            raise
-        if isinstance(kid, str):
-            self._last_good[kid] = key
+            with self._lock:
+                key = self._last_good.get(kid)
+            if key is None:
+                raise
+            return key
+        key = self._remember(keys, kid)
+        if key is not None:
+            return key
+        # Unknown kid: maybe a key rotated in since the cached fetch.
+        with self._lock:
+            now = self._clock()
+            last = self._last_refetch
+            if last is not None and now - last < self._refetch_interval:
+                raise jwt.PyJWKClientError("unknown kid; JWKS refetch rate-limited")
+            self._last_refetch = now
+        key = self._remember(self._jwk_client.get_signing_keys(refresh=True), kid)
+        if key is None:
+            raise jwt.PyJWKClientError("unknown kid")
         return key
 
     async def verify_token(self, token: str) -> AccessToken | None:

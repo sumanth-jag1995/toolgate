@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import logging
 import os
 import sys
 from collections.abc import Sequence
@@ -39,6 +40,9 @@ from toolgate_gateway.settings import GatewaySettings
 from toolgate_gateway.tracing import setup_tracing, shutdown_tracing
 
 PROG = "toolgate-gateway"
+# Record fields only: gateway log messages carry ids, names, reasons and
+# exception types, never secrets, arguments or DSNs.
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _MAX_FIELD_CHARS = 300
 _MAX_DIFF_LINE_CHARS = 2000
 
@@ -92,6 +96,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             loc = ".".join(str(p) for p in e["loc"])
             _err(f"setting {loc}: {e['type']}")
         return 2
+    # uvicorn configures only its own loggers: without a root handler the
+    # gateway's warnings, alerts and audit recovery notices would be lost.
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     try:
         setup_tracing("toolgate-gateway", settings.otlp_endpoint)
         asyncio.run(_serve(settings))

@@ -52,6 +52,9 @@ async def test_jwks_failure_never_raises(rsa_key, make_token):
         def get_signing_key_from_jwt(self, token):
             raise OSError("jwks down")
 
+        def get_signing_keys(self, refresh=False):
+            raise OSError("jwks down")
+
     v = AgentTokenVerifier("i", "toolgate-gateway", "http://x", jwk_client=Broken())
     assert await v.verify_token(make_token()) is None
 
@@ -220,3 +223,86 @@ async def test_verifier_uses_cached_key_when_jwks_refresh_fails(
         headers={"kid": "unknown"},
     )
     assert await v.verify_token(unknown) is None
+
+
+def _token(rsa_key, kid: str) -> str:
+    return jwt.encode(
+        {
+            "iss": "http://keycloak.test/realms/toolgate",
+            "aud": "toolgate-gateway",
+            "azp": "a",
+            "exp": 4102444800,
+        },
+        rsa_key,
+        algorithm="RS256",
+        headers={"kid": kid},
+    )
+
+
+def _jwk(rsa_key, kid: str) -> dict:
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(rsa_key.public_key(), as_dict=True)
+    jwk.update(kid=kid, use="sig", alg="RS256")
+    return jwk
+
+
+def _verifier(client, **kw) -> AgentTokenVerifier:
+    return AgentTokenVerifier(
+        "http://keycloak.test/realms/toolgate",
+        "toolgate-gateway",
+        "http://x",
+        jwk_client=client,
+        **kw,
+    )
+
+
+async def test_rotated_out_kid_not_used_during_outage(rsa_key, monkeypatch):
+    client = jwt.PyJWKClient("http://keycloak.test/jwks", cache_jwk_set=False)
+    state = {"down": False, "keys": [_jwk(rsa_key, "A")]}
+
+    def fetch_data():
+        if state["down"]:
+            raise jwt.PyJWKClientConnectionError("jwks down")
+        return {"keys": state["keys"]}
+
+    monkeypatch.setattr(client, "fetch_data", fetch_data)
+    v = _verifier(client)
+    assert await v.verify_token(_token(rsa_key, "A")) is not None  # A cached
+    state["keys"] = [_jwk(rsa_key, "B")]  # A rotated out
+    assert await v.verify_token(_token(rsa_key, "B")) is not None
+    state["down"] = True
+    assert await v.verify_token(_token(rsa_key, "B")) is not None  # fallback
+    assert await v.verify_token(_token(rsa_key, "A")) is None
+
+
+class CountingJWKS:
+    """get_signing_keys like PyJWKClient's: cached unless ``refresh``."""
+
+    def __init__(self, keys):
+        self.keys = keys
+        self.fetches = 0
+        self._cached = None
+
+    def get_signing_keys(self, refresh=False):
+        if refresh or self._cached is None:
+            self.fetches += 1
+            self._cached = [jwt.PyJWK(k) for k in self.keys]
+        return self._cached
+
+
+async def test_unknown_kid_refetch_rate_limited(rsa_key):
+    client = CountingJWKS([_jwk(rsa_key, "A")])
+    now = [1000.0]
+    v = _verifier(client, clock=lambda: now[0])
+    assert await v.verify_token(_token(rsa_key, "A")) is not None
+    assert client.fetches == 1
+    assert await v.verify_token(_token(rsa_key, "X")) is None
+    assert client.fetches == 2  # one refetch for the unknown kid
+    for kid in ("X", "Y", "Z"):  # within 10 s: rejected without fetching
+        assert await v.verify_token(_token(rsa_key, kid)) is None
+    assert client.fetches == 2
+    now[0] += 10.0
+    client.keys.append(_jwk(rsa_key, "Y"))  # rotated in meanwhile
+    assert await v.verify_token(_token(rsa_key, "Y")) is not None
+    assert client.fetches == 3
+    assert await v.verify_token(_token(rsa_key, "A")) is not None  # cached
+    assert client.fetches == 3

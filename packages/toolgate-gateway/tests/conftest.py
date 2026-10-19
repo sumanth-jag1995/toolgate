@@ -26,18 +26,22 @@ AUDIENCE = "toolgate-gateway"
 
 
 class _StubSigningKey:
-    def __init__(self, key):
+    def __init__(self, key, key_id="test"):
         self.key = key
+        self.key_id = key_id
 
 
 class StubJWKClient:
-    """Stands in for jwt.PyJWKClient: always returns the test public key."""
+    """Stands in for jwt.PyJWKClient: the test public key, kid "test"."""
 
     def __init__(self, public_key):
         self._key = _StubSigningKey(public_key)
 
     def get_signing_key_from_jwt(self, token):
         return self._key
+
+    def get_signing_keys(self, refresh=False):
+        return [self._key]
 
 
 @pytest.fixture(scope="session")

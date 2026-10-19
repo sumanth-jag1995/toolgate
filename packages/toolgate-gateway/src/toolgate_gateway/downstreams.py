@@ -26,7 +26,7 @@ def load_downstreams(path: Path | str) -> list[DownstreamConfig]:
         if not isinstance(item, dict):
             raise PolicyError(path, "each downstream must be a mapping")
         sid, url = item.get("server_id"), item.get("url")
-        if not isinstance(sid, str) or not _ID_RE.match(sid):
+        if not isinstance(sid, str) or not _ID_RE.fullmatch(sid):
             raise PolicyError(path, "invalid downstream server_id")
         if not isinstance(url, str) or not url:
             raise PolicyError(path, f"downstream {sid!r} needs a url")

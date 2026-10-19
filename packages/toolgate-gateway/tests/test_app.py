@@ -765,3 +765,23 @@ async def test_no_sensitive_values_in_spans(gateway, make_token, spans):
     for tool in tools:
         assert tool.description and tool.description not in text
     assert_token_absent(token, text)
+
+
+def test_cli_serve_configures_logging(serve_env, monkeypatch):
+    """Warnings, alerts and "audit database reachable" (INFO) need a root
+    handler: uvicorn configures only its own loggers."""
+    import logging
+
+    from toolgate_gateway import cli
+
+    calls = []
+
+    async def fake_serve(self, sockets=None):
+        pass
+
+    monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
+    monkeypatch.setattr(logging, "basicConfig", lambda **kw: calls.append(kw))
+    assert cli.main(["serve"]) == 0
+    (kw,) = calls
+    assert kw["level"] == logging.INFO
+    assert "%(name)s" in kw["format"] and "%(message)s" in kw["format"]
