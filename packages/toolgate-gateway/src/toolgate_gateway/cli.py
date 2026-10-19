@@ -35,6 +35,7 @@ from toolgate_gateway.policy import Allowlist, PolicyError
 from toolgate_gateway.pool import DownstreamPool, http_session_factory
 from toolgate_gateway.reviews import PendingReviews
 from toolgate_gateway.settings import GatewaySettings
+from toolgate_gateway.tracing import setup_tracing
 
 PROG = "toolgate-gateway"
 _MAX_FIELD_CHARS = 300
@@ -90,6 +91,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             loc = ".".join(str(p) for p in e["loc"])
             _err(f"setting {loc}: {e['type']}")
         return 2
+    setup_tracing("toolgate-gateway", settings.otlp_endpoint)
     try:
         asyncio.run(_serve(settings))
     except PolicyError as exc:

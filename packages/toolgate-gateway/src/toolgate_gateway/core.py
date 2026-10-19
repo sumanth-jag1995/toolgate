@@ -10,8 +10,8 @@ The snapshot serves the PINNED definition, never the live one: the pin hash
 covers only the normalized hashed fields, so a downstream could otherwise add
 ``_meta``, ``icons``, extra fields or whitespace variants and still match.
 
-Logs carry server ids, tool names, reasons and hashes only: never tool
-definitions, arguments or results.
+Logs and trace spans carry server ids, tool names, reasons and hashes only:
+never tool definitions, arguments or results.
 """
 
 from __future__ import annotations
@@ -21,7 +21,8 @@ import dataclasses
 import itertools
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +30,8 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, best_match
 from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult, TextContent, Tool
+from opentelemetry import trace
+from opentelemetry.trace import Span
 from toolgate_pin import InventoryTool, Pinner, PinSet, Quarantine, scan_output
 
 from toolgate_gateway.audit import AuditRecord, AuditWriter, args_hmac
@@ -37,6 +40,7 @@ from toolgate_gateway.pins import PinSource
 from toolgate_gateway.policy import Allowlist
 from toolgate_gateway.pool import DownstreamPool, DownstreamUnavailable, ServerInfo
 from toolgate_gateway.reviews import PendingReviews
+from toolgate_gateway.tracing import span, trace_id_of
 
 log = logging.getLogger(__name__)
 alert_log = logging.getLogger("toolgate_gateway.alert")
@@ -96,6 +100,22 @@ def _schema_failure(validator: Draft202012Validator, args: Any) -> str | None:
     return f"schema: {error.validator}"
 
 
+# (audit decision, audit reason, tool-error message) of a refused call.
+_Denial = tuple[str, str | None, str]
+
+
+@contextmanager
+def _stage(name: str, denial: list[_Denial]) -> Iterator[Span]:
+    """A pipeline-stage span. On exit, the stage that recorded a denial in
+    ``denial`` carries ``toolgate.decision``."""
+    with span(name) as current:
+        try:
+            yield current
+        finally:
+            if denial:
+                current.set_attribute("toolgate.decision", denial[0][0])
+
+
 class _Call:
     """Audit bookkeeping for one tools/call."""
 
@@ -107,8 +127,10 @@ class _Call:
         name: str,
         arguments: Any,
         start: float,
+        root: Span,
     ) -> None:
         self.core = core
+        self.root = root
         self.client_id = client_id
         self.agent_id = agent_id
         self.name = name[:MAX_LOGGED_NAME]
@@ -116,7 +138,19 @@ class _Call:
         self.start = start
         self.tool_hash: str | None = None
 
+    def set_tool_hash(self, tool_hash: str | None) -> None:
+        self.tool_hash = tool_hash
+        if tool_hash is not None:
+            self.root.set_attribute("toolgate.tool_hash", tool_hash)
+
     def finish(self, decision: str, reason: str | None) -> None:
+        """Audit the call in a ``gateway.audit`` span (a child of the call
+        span: call it outside any stage span)."""
+        self.root.set_attribute("toolgate.decision", decision)
+        with span("gateway.audit"):
+            self._submit(decision, reason)
+
+    def _submit(self, decision: str, reason: str | None) -> None:
         latency_ms = (time.perf_counter() - self.start) * 1000.0
         args = self.arguments if isinstance(self.arguments, Mapping) else None
         if self.arguments is not None and args is None:
@@ -130,7 +164,7 @@ class _Call:
             decision=decision,
             reason=reason,
             latency_ms=latency_ms,
-            trace_id=None,  # Task 8 adds tracing
+            trace_id=trace_id_of(self.root),
         )
         if not self.core.audit.submit(rec):
             log.warning(
@@ -140,7 +174,8 @@ class _Call:
                 decision,
             )
 
-    def deny(self, decision: str, reason: str | None, message: str) -> CallToolResult:
+    def deny(self, denial: _Denial) -> CallToolResult:
+        decision, reason, message = denial
         self.finish(decision, reason)
         return _error(message)
 
@@ -197,12 +232,15 @@ class GatewayCore:
     # -- public ------------------------------------------------------------
 
     async def list_tools(self, client_id: str) -> list[Tool]:
-        snapshot = await self._refresh()
-        return [
-            e.tool.model_copy(update={"name": name})
-            for name, e in snapshot.items()
-            if self.allowlist.allowed(client_id, name)
-        ]
+        with span("gateway.tools_list", **{"toolgate.client_id": client_id}) as root:
+            snapshot = await self._refresh()
+            tools = [
+                e.tool.model_copy(update={"name": name})
+                for name, e in snapshot.items()
+                if self.allowlist.allowed(client_id, name)
+            ]
+            root.set_attribute("toolgate.allowed_count", len(tools))
+            return tools
 
     async def refresh_snapshot(self) -> None:
         await self._refresh()
@@ -219,93 +257,152 @@ class GatewayCore:
         and is audited; the downstream is called only if every check passes
         and the audit log can take the row."""
         start = time.perf_counter()
-        call = _Call(self, client_id, agent_id, name, arguments, start)
+        with span(
+            "gateway.tools_call",
+            **{
+                "toolgate.client_id": client_id,
+                "toolgate.tool": name[:MAX_LOGGED_NAME],
+            },
+        ) as root:
+            call = _Call(self, client_id, agent_id, name, arguments, start, root)
+            return await self._call(call, client_id, name, arguments)
 
-        # 1. namespace and known server
-        parts = split_namespaced(name)
-        if (
-            parts is None
-            or not parts[0]
-            or not parts[1]
-            or parts[0] not in self.pool.server_ids
-        ):
-            return call.deny("deny_unknown_tool", None, _UNKNOWN)
+    async def _call(
+        self, call: _Call, client_id: str, name: str, arguments: Any
+    ) -> CallToolResult:
+        denial: list[_Denial] = []
+
+        # 1-2. namespace, known server and allowlist
+        with _stage("gateway.auth_scope", denial):
+            parts = split_namespaced(name)
+            if (
+                parts is None
+                or not parts[0]
+                or not parts[1]
+                or parts[0] not in self.pool.server_ids
+            ):
+                denial.append(("deny_unknown_tool", None, _UNKNOWN))
+            elif not self.allowlist.allowed(client_id, name):
+                denial.append(("deny_scope", None, _SCOPE))
+        if denial:
+            return call.deny(denial[0])
+        assert parts is not None
         server_id, tool_name = parts
 
-        # 2. allowlist
-        if not self.allowlist.allowed(client_id, name):
-            return call.deny("deny_scope", None, _SCOPE)
-
         # 3. pins and snapshot. Stale/corrupt pins bound calls as well.
-        entry = self.snapshot.get(name)
-        call.tool_hash = entry.tool_hash if entry is not None else None
+        with _stage("gateway.pin_check", denial):
+            entry = self.snapshot.get(name)
+            call.set_tool_hash(entry.tool_hash if entry is not None else None)
+            denied = self._pin_denial(server_id, tool_name, entry)
+            if denied is not None:
+                denial.append(denied)
+        if denial:
+            return call.deny(denial[0])
+        assert entry is not None
+
+        # 4. argument schema (the pinned inputSchema)
+        args: Any = {} if arguments is None else arguments
+        with _stage("gateway.schema", denial):
+            schema_failure = _schema_failure(entry.input_validator, args)
+            if schema_failure is not None:
+                denial.append(("deny_schema", schema_failure, _SCHEMA))
+        if denial:
+            return call.deny(denial[0])
+
+        # 5. the audit log must be able to take the row before forwarding
+        with span("gateway.audit") as audit_span:
+            if not self.audit.accepting:
+                audit_span.set_attribute("toolgate.decision", "error_audit_down")
+                call.root.set_attribute("toolgate.decision", "error_audit_down")
+                log.warning(
+                    "audit log unavailable; refused call client=%s tool=%r",
+                    client_id,
+                    call.name,
+                )
+                return _error(_AUDIT_DOWN)
+
+        # 6. forward with the gateway's own credentials
+        cancelled: asyncio.CancelledError | None = None
+        result: CallToolResult | None = None
+        with _stage("gateway.forward", denial) as fwd:
+            try:
+                result = await self.pool.call_tool(server_id, tool_name, args)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+                fwd.set_attribute("toolgate.decision", "error_downstream")
+            except DownstreamUnavailable:
+                denial.append(
+                    ("error_downstream", "unavailable", _unavailable(server_id))
+                )
+            except McpError:
+                denial.append(("error_downstream", "jsonrpc_error", _DOWNSTREAM_ERROR))
+            except Exception as exc:  # noqa: BLE001 - any failure is a tool error
+                log.warning(
+                    "tools/call %r on %s failed (%s)",
+                    call.name,
+                    server_id,
+                    type(exc).__name__,
+                )
+                denial.append(
+                    ("error_downstream", type(exc).__name__, _DOWNSTREAM_ERROR)
+                )
+        if cancelled is not None:
+            call.finish("error_downstream", "cancelled")
+            raise cancelled
+        if denial:
+            return call.deny(denial[0])
+        assert result is not None
+
+        # 7. scan the output
+        verdict: tuple[str, str | None] | None = None
+        with _stage("gateway.output_scan", denial) as scan_span:
+            inventory = [t for tools in self.inventory.values() for t in tools]
+            try:
+                report = scan_output(result, server_id=server_id, inventory=inventory)
+            except Exception as exc:  # noqa: BLE001 - cannot scan: withhold
+                log.warning(
+                    "output scan of %r failed (%s)", call.name, type(exc).__name__
+                )
+                denial.append(("deny_output", "scan_failed", _WITHHELD))
+            else:
+                rules = ",".join(sorted({f.rule_id for f in report.findings})) or None
+                if report.verdict == "malicious":
+                    denial.append(("deny_output", rules, _WITHHELD))
+                elif report.verdict == "suspicious":
+                    verdict = ("flag_output", rules)
+                else:
+                    verdict = ("allow", None)
+                if verdict is not None:
+                    scan_span.set_attribute("toolgate.decision", verdict[0])
+        if denial:
+            return call.deny(denial[0])
+        assert verdict is not None
+        call.finish(*verdict)
+        return result
+
+    def _pin_denial(
+        self, server_id: str, tool_name: str, entry: SnapshotEntry | None
+    ) -> _Denial | None:
         state = self.pins.state()
         if state is None:
-            return call.deny("deny_unpinned", "pins unavailable", _UNPINNED)
+            return ("deny_unpinned", "pins unavailable", _UNPINNED)
         sp = state[0].get(server_id)
         pin = sp.tools.get(tool_name) if sp is not None else None
         if pin is None:
-            return call.deny("deny_unpinned", None, _UNPINNED)
+            return ("deny_unpinned", None, _UNPINNED)
         if entry is None:
             if server_id not in self.inventory:
                 # Down at the last refresh: its tools were omitted, which is
                 # not drift. Nothing is forwarded.
-                return call.deny(
-                    "error_downstream", "not listed (down)", _unavailable(server_id)
+                return (
+                    "error_downstream",
+                    "not listed (down)",
+                    _unavailable(server_id),
                 )
-            return call.deny("deny_drift", "not in verified snapshot", _DRIFT)
+            return ("deny_drift", "not in verified snapshot", _DRIFT)
         if pin.hash != entry.tool_hash:
-            return call.deny("deny_drift", "pin changed since snapshot", _DRIFT)
-
-        # 4. argument schema (the pinned inputSchema)
-        args: Any = {} if arguments is None else arguments
-        schema_failure = _schema_failure(entry.input_validator, args)
-        if schema_failure is not None:
-            return call.deny("deny_schema", schema_failure, _SCHEMA)
-
-        # 5. the audit log must be able to take the row before forwarding
-        if not self.audit.accepting:
-            log.warning(
-                "audit log unavailable; refused call client=%s tool=%r",
-                client_id,
-                call.name,
-            )
-            return _error(_AUDIT_DOWN)
-
-        # 6. forward with the gateway's own credentials
-        try:
-            result = await self.pool.call_tool(server_id, tool_name, args)
-        except asyncio.CancelledError:
-            call.finish("error_downstream", "cancelled")
-            raise
-        except DownstreamUnavailable:
-            return call.deny("error_downstream", "unavailable", _unavailable(server_id))
-        except McpError:
-            return call.deny("error_downstream", "jsonrpc_error", _DOWNSTREAM_ERROR)
-        except Exception as exc:  # noqa: BLE001 - any failure is a tool error
-            log.warning(
-                "tools/call %r on %s failed (%s)",
-                call.name,
-                server_id,
-                type(exc).__name__,
-            )
-            return call.deny("error_downstream", type(exc).__name__, _DOWNSTREAM_ERROR)
-
-        # 7. scan the output
-        inventory = [t for tools in self.inventory.values() for t in tools]
-        try:
-            report = scan_output(result, server_id=server_id, inventory=inventory)
-        except Exception as exc:  # noqa: BLE001 - cannot scan: withhold
-            log.warning("output scan of %r failed (%s)", call.name, type(exc).__name__)
-            return call.deny("deny_output", "scan_failed", _WITHHELD)
-        rules = ",".join(sorted({f.rule_id for f in report.findings})) or None
-        if report.verdict == "malicious":
-            return call.deny("deny_output", rules, _WITHHELD)
-        if report.verdict == "suspicious":
-            call.finish("flag_output", rules)
-        else:
-            call.finish("allow", None)
-        return result
+            return ("deny_drift", "pin changed since snapshot", _DRIFT)
+        return None
 
     # -- refresh -----------------------------------------------------------
 
@@ -317,10 +414,16 @@ class GatewayCore:
             snapshot: dict[str, SnapshotEntry] = {}
             inventory: dict[str, list[InventoryTool]] = {}
             quarantines: list[tuple[str, Quarantine]] = []
+            quarantined = 0
             pinset: PinSet | None = None
         else:
             pinset, pinner = state
-            snapshot, inventory, quarantines = await self._build(pinset, pinner)
+            snapshot, inventory, quarantines, quarantined = await self._build(
+                pinset, pinner
+            )
+        trace.get_current_span().set_attribute(
+            "toolgate.quarantined_count", quarantined
+        )
 
         # A slower, older refresh never overwrites a newer one, and its
         # (outdated) review bookkeeping is skipped.
@@ -342,6 +445,7 @@ class GatewayCore:
         dict[str, SnapshotEntry],
         dict[str, list[InventoryTool]],
         list[tuple[str, Quarantine]],
+        int,
     ]:
         server_ids = self.pool.server_ids
         results = await asyncio.gather(
@@ -350,6 +454,7 @@ class GatewayCore:
         snapshot: dict[str, SnapshotEntry] = {}
         inventory: dict[str, list[InventoryTool]] = {}
         quarantines: list[tuple[str, Quarantine]] = []
+        quarantined_count = 0
         for server_id, listed in zip(server_ids, results, strict=True):
             if listed is None:  # down: its tools are omitted
                 continue
@@ -359,6 +464,7 @@ class GatewayCore:
                 for n in dict.fromkeys(t.name for t in tools)
             ]
             allowed, quarantined = self._verify(pinner, server_id, info, tools)
+            quarantined_count += len(quarantined)
             quarantines.extend(
                 (server_id, q) for q in quarantined if q.reason in _REVIEWED
             )
@@ -366,7 +472,7 @@ class GatewayCore:
                 entry = self._entry(pinset, server_id, tool.name)
                 if entry is not None:
                     snapshot[entry.namespaced] = entry
-        return snapshot, inventory, quarantines
+        return snapshot, inventory, quarantines, quarantined_count
 
     def _verify(
         self, pinner: Pinner, server_id: str, info: ServerInfo, tools: list[Tool]
@@ -424,6 +530,16 @@ class GatewayCore:
             "toolgate_observed_hash": q.observed_hash,
             "toolgate_pinned_hash": q.pinned_hash,
         }
+        trace.get_current_span().add_event(
+            "toolgate.alert",
+            {
+                "toolgate.server_id": server_id,
+                "toolgate.tool": q.tool_name,
+                "toolgate.reason": q.reason,
+                "toolgate.observed_hash": q.observed_hash or "",
+                "toolgate.pinned_hash": q.pinned_hash or "",
+            },
+        )
         alert_log.warning(
             "toolgate.alert server_id=%s tool=%r reason=%s observed_hash=%s "
             "pinned_hash=%s",

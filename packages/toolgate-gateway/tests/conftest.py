@@ -9,6 +9,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from mcp.client.session import ClientSession
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_client_server_memory_streams
+from opentelemetry import trace as otel_trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 from toolgate_gateway.auth import AgentTokenVerifier
 from toolgate_gateway.pool import DownstreamPool
 from toolgate_pin import LockfileStore, PinSet, Target
@@ -204,3 +210,17 @@ def build_core_write():
 @pytest.fixture(scope="session")
 def write_lockfile():
     return _write_lockfile
+
+
+@pytest.fixture
+def spans(monkeypatch):
+    """Finished spans of a fresh in-memory provider installed as the global
+    one for this test only (OTel allows setting the real global once, so the
+    module slot is patched and restored instead). Spans from toolgate_pin
+    resolve the global tracer per call and land here too."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(otel_trace, "_TRACER_PROVIDER", provider)
+    yield exporter
+    provider.shutdown()

@@ -741,3 +741,27 @@ def test_cli_serve_reports_missing_settings_without_values(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "issuer" in err
     assert "do-not-print-me" not in err
+
+
+async def test_no_sensitive_values_in_spans(gateway, make_token, spans):
+    secret = "S3CRET-ARG-VALUE"
+    token = make_token(azp="servicing")
+    gw = await gateway()
+    async with mcp_session(gw.mcp_url, token) as session:
+        tools = (await session.list_tools()).tools
+        await session.call_tool("core-read.get_claim_status", {"claim_id": secret})
+        await session.call_tool("core-read.get_claim_status", {"bogus": secret})
+    finished = spans.get_finished_spans()
+    names = {s.name for s in finished}
+    assert {"gateway.tools_list", "gateway.tools_call"} <= names
+    blob = []
+    for s in finished:
+        blob.append(repr(dict(s.attributes or {})))
+        for e in s.events:
+            blob.append(e.name + repr(dict(e.attributes or {})))
+    text = " | ".join(blob)
+    assert secret not in text
+    assert "approved" not in text  # output text
+    for tool in tools:
+        assert tool.description and tool.description not in text
+    assert_token_absent(token, text)
