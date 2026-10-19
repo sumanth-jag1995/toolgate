@@ -2,7 +2,9 @@
 
 serve    run the authenticated MCP endpoint (uvicorn on GATEWAY_HOST:GATEWAY_PORT)
 migrate  apply DB migrations as an admin; the app-role password comes from an
-         environment variable, never a command-line argument
+         environment variable, never a command-line argument. Prefer
+         --admin-dsn-env NAME over --admin-dsn, which exposes the admin
+         password in the process list and shell history.
 reviews  list open pending reviews (DATABASE_URL), hidden characters revealed
 
 Error output names settings, types and files only: never setting values,
@@ -55,7 +57,10 @@ async def _serve(settings: GatewaySettings) -> None:
         settings.token_url, settings.client_id, settings.client_secret
     )
     try:
-        db = await create_pool(settings.database_url)
+        # min_size=0: creating the pool does not connect, so the gateway
+        # starts while Postgres is down; calls are refused until the audit
+        # writer's probe succeeds.
+        db = await create_pool(settings.database_url, min_size=0)
         try:
             core = GatewayCore(
                 DownstreamPool(configs, http_session_factory(auth)),
@@ -90,7 +95,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     except PolicyError as exc:
         _err(str(exc))
         return 2
-    except OSError as exc:
+    except Exception as exc:  # noqa: BLE001 - type only: messages may echo values
         _err(f"serve failed ({type(exc).__name__})")
         return 1
     return 0
@@ -100,12 +105,19 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
 
 def _cmd_migrate(args: argparse.Namespace) -> int:
+    if args.admin_dsn_env is not None:
+        admin_dsn = os.environ.get(args.admin_dsn_env, "")
+        if not admin_dsn:
+            _err(f"environment variable {args.admin_dsn_env} is not set or empty")
+            return 2
+    else:
+        admin_dsn = args.admin_dsn
     password = os.environ.get(args.app_password_env, "")
     if not password:
         _err(f"environment variable {args.app_password_env} is not set or empty")
         return 2
     try:
-        asyncio.run(migrate(args.admin_dsn, password))
+        asyncio.run(migrate(admin_dsn, password))
     except Exception as exc:  # noqa: BLE001 - type only: messages may echo DSNs
         _err(f"migrate failed ({type(exc).__name__})")
         return 1
@@ -180,7 +192,16 @@ def _parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="run the authenticated MCP endpoint")
     serve.set_defaults(func=_cmd_serve)
     mig = sub.add_parser("migrate", help="apply database migrations (admin)")
-    mig.add_argument("--admin-dsn", required=True)
+    dsn = mig.add_mutually_exclusive_group(required=True)
+    dsn.add_argument(
+        "--admin-dsn-env",
+        metavar="NAME",
+        help="environment variable holding the admin DSN (preferred)",
+    )
+    dsn.add_argument(
+        "--admin-dsn",
+        help="admin DSN; prefer --admin-dsn-env (argv is visible to other users)",
+    )
     mig.add_argument(
         "--app-password-env",
         default="GATEWAY_DB_PASSWORD",

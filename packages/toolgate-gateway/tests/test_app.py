@@ -118,7 +118,7 @@ class Gateway:
         return f"{self.base_url}/mcp"
 
 
-def make_settings(tmp_path, port: int) -> GatewaySettings:
+def make_settings(tmp_path, port: int, **overrides) -> GatewaySettings:
     return GatewaySettings(
         issuer=ISSUER,
         jwks_url=f"{ISSUER}/protocol/openid-connect/certs",
@@ -132,7 +132,14 @@ def make_settings(tmp_path, port: int) -> GatewaySettings:
         host="127.0.0.1",
         port=port,
         public_url=f"http://127.0.0.1:{port}",
+        **overrides,
     )
+
+
+def assert_token_absent(token: str, text: str) -> None:
+    """Neither the raw token nor any of its JWT segments appears in ``text``."""
+    for part in (token, *token.split(".")):
+        assert part not in text
 
 
 @pytest.fixture
@@ -148,18 +155,18 @@ def builders(build_core_write):
 async def gateway(tmp_path, memory_factory_cls, write_lockfile, builders, verifier):
     running = []
 
-    async def start(*, down=(), configs=CONFIGS, factory=None):
+    async def start(*, down=(), configs=CONFIGS, factory=None, audit=None, **settings):
         lock = tmp_path / "toolgate.lock.json"
         await write_lockfile(lock, builders, configs)
         if factory is None:
             factory = spy_factory_cls(memory_factory_cls)(builders, down=down)
         pool = DownstreamPool(configs, factory)
-        audit = FakeAudit()
+        audit = FakeAudit() if audit is None else audit
         core = GatewayCore(
             pool, PinSource(lock), ALLOWLIST, audit, None, hmac_key=HMAC_KEY
         )
         port = _free_port()
-        app = build_app(core, verifier, make_settings(tmp_path, port))
+        app = build_app(core, verifier, make_settings(tmp_path, port, **settings))
         server = uvicorn.Server(
             uvicorn.Config(
                 app, host="127.0.0.1", port=port, log_level="error", lifespan="on"
@@ -180,7 +187,10 @@ async def gateway(tmp_path, memory_factory_cls, write_lockfile, builders, verifi
         server.should_exit = True
         await task
         # Lifespan shutdown stopped what it started.
-        assert gw.audit.events == ["start", "stop"]
+        if isinstance(gw.audit, FakeAudit):
+            assert gw.audit.events == ["start", "stop"]
+        else:
+            assert not gw.audit.accepting
         assert not gw.pool._conns
 
 
@@ -236,7 +246,8 @@ async def test_malformed_and_foreign_tokens_401(gateway, make_token, rsa_key):
             assert "resource_metadata=" in resp.headers["www-authenticate"]
 
 
-async def test_wrong_audience_401_nothing_forwarded(gateway, make_token):
+async def test_wrong_audience_401_nothing_forwarded(gateway, make_token, caplog):
+    caplog.set_level(logging.DEBUG)
     gw = await gateway()
     token = make_token(aud="core-read")
     call = {
@@ -256,11 +267,14 @@ async def test_wrong_audience_401_nothing_forwarded(gateway, make_token):
                 headers={**MCP_HEADERS, "Authorization": f"Bearer {token}"},
             )
             assert resp.status_code == 401
+            assert_token_absent(token, resp.text + str(resp.headers))
     assert gw.factory.calls == []
     assert gw.audit.records == []
+    assert_token_absent(token, caplog.text)
 
 
-async def test_expired_token_401(gateway, make_token):
+async def test_expired_token_401(gateway, make_token, caplog):
+    caplog.set_level(logging.DEBUG)
     gw = await gateway()
     token = make_token(exp_delta=-60)
     async with httpx.AsyncClient() as http:
@@ -272,6 +286,107 @@ async def test_expired_token_401(gateway, make_token):
     assert resp.status_code == 401
     assert 'error="invalid_token"' in resp.headers["www-authenticate"]
     assert gw.factory.calls == []
+    assert_token_absent(token, resp.text + str(resp.headers))
+    assert_token_absent(token, caplog.text)
+
+
+async def test_get_and_delete_without_token_401(gateway):
+    gw = await gateway()
+    async with httpx.AsyncClient() as http:
+        get = await http.get(gw.mcp_url, headers={"Accept": "text/event-stream"})
+        delete = await http.delete(gw.mcp_url, headers={"mcp-session-id": "x" * 32})
+    for resp in (get, delete):
+        assert resp.status_code == 401
+        assert "resource_metadata=" in resp.headers["www-authenticate"]
+
+
+@pytest.mark.parametrize(
+    "intruder",
+    [
+        {"azp": "claims-intake"},  # another agent client
+        {"azp": "servicing", "sub": "agent-sub-2"},  # same client, other subject
+    ],
+)
+async def test_session_bound_to_its_principal(gateway, make_token, intruder):
+    """A valid token for a different principal cannot use another caller's
+    MCP session: 404 (as if it did not exist) and nothing is forwarded."""
+    gw = await gateway()
+    owner = make_token(azp="servicing", sub="agent-sub-1")
+    call = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {
+            "name": "core-read.get_claim_status",  # allowed for both clients
+            "arguments": {"claim_id": "C-1"},
+        },
+    }
+    async with (
+        httpx.AsyncClient(headers={"Authorization": f"Bearer {owner}"}) as http,
+        streamable_http_client(gw.mcp_url, http_client=http) as (read, write, sid),
+        ClientSession(read, write) as session,
+    ):
+        init = await session.initialize()
+        await session.list_tools()
+        session_id = sid()
+        assert session_id
+        async with httpx.AsyncClient() as other:
+            resp = await other.post(
+                gw.mcp_url,
+                json=call,
+                headers={
+                    **MCP_HEADERS,
+                    "Authorization": f"Bearer {make_token(**intruder)}",
+                    "mcp-session-id": session_id,
+                    "mcp-protocol-version": str(init.protocolVersion),
+                },
+            )
+        assert resp.status_code == 404
+        assert gw.factory.calls == []
+        assert gw.audit.records == []
+        # The owner's session still works.
+        result = await session.call_tool(
+            "core-read.get_claim_status", {"claim_id": "C-1"}
+        )
+        assert not result.isError
+    assert len(gw.factory.calls) == 1
+
+
+async def test_max_sessions_enforced(gateway, make_token):
+    gw = await gateway(max_sessions=1)
+    async with mcp_session(gw.mcp_url, make_token()):
+        async with httpx.AsyncClient() as http:
+            resp = await http.post(
+                gw.mcp_url,
+                json=MCP_INIT,
+                headers={**MCP_HEADERS, "Authorization": f"Bearer {make_token()}"},
+            )
+        assert resp.status_code == 503
+
+
+async def test_starts_with_db_unreachable_lists_but_refuses_calls(gateway, make_token):
+    from toolgate_gateway.audit import AuditWriter
+    from toolgate_gateway.db import create_pool
+
+    # Nothing listens on this port: creating the pool must not connect.
+    db = await create_pool(
+        f"postgresql://app:pw@127.0.0.1:{_free_port()}/toolgate", min_size=0
+    )
+    try:
+        audit = AuditWriter(db, probe_min_s=0.05, probe_max_s=0.1)
+        gw = await gateway(audit=audit)
+        async with mcp_session(gw.mcp_url, make_token(azp="servicing")) as session:
+            names = {t.name for t in (await session.list_tools()).tools}
+            result = await session.call_tool(
+                "core-read.get_claim_status", {"claim_id": "C-1"}
+            )
+        assert "core-read.get_claim_status" in names
+        assert result.isError
+        assert isinstance(result.content[0], TextContent)
+        assert result.content[0].text == "audit log unavailable; call refused"
+        assert gw.factory.calls == []
+    finally:
+        await db.close()
 
 
 async def test_servicing_lists_namespaced_tools(gateway, make_token):
@@ -479,6 +594,22 @@ def test_cli_migrate_reads_password_from_env(pg_admin_dsn, monkeypatch, capsys):
     asyncio.run(can_connect())
 
 
+def test_cli_migrate_admin_dsn_from_env(pg_admin_dsn, monkeypatch, capsys):
+    from toolgate_gateway import cli
+
+    monkeypatch.setenv("GATEWAY_DB_PASSWORD", "app-pw-from-env")
+    args = ["migrate", "--admin-dsn-env", "TOOLGATE_ADMIN_DSN"]
+    monkeypatch.delenv("TOOLGATE_ADMIN_DSN", raising=False)
+    assert cli.main(args) == 2
+    assert "TOOLGATE_ADMIN_DSN" in capsys.readouterr().err
+    monkeypatch.setenv("TOOLGATE_ADMIN_DSN", pg_admin_dsn)
+    assert cli.main(args) == 0
+    with pytest.raises(SystemExit):  # exactly one DSN source
+        cli.main([*args, "--admin-dsn", pg_admin_dsn])
+    with pytest.raises(SystemExit):
+        cli.main(["migrate"])
+
+
 def test_cli_reviews_lists_open(pg_admin_dsn, monkeypatch, capsys):
     from toolgate_gateway import cli
     from toolgate_gateway.db import create_pool
@@ -531,9 +662,8 @@ def test_cli_reviews_lists_open(pg_admin_dsn, monkeypatch, capsys):
     assert "old_tool" not in out  # resolved reviews are not listed
 
 
-def test_cli_serve_builds_from_settings(tmp_path, monkeypatch):
-    from toolgate_gateway import cli
-
+@pytest.fixture
+def serve_env(tmp_path, monkeypatch):
     (tmp_path / "agents.yaml").write_text(
         "agents:\n  servicing: ['core-read.*']\n", encoding="utf-8"
     )
@@ -541,12 +671,14 @@ def test_cli_serve_builds_from_settings(tmp_path, monkeypatch):
         "downstreams:\n  - server_id: core-read\n    url: http://127.0.0.1:9/mcp\n",
         encoding="utf-8",
     )
+    # Nothing listens on the DB port: serve must still start.
+    dsn = f"postgresql://app:pw@127.0.0.1:{_free_port()}/toolgate"
     env = {
         "GATEWAY_ISSUER": ISSUER,
         "GATEWAY_JWKS_URL": f"{ISSUER}/certs",
         "GATEWAY_TOKEN_URL": f"{ISSUER}/token",
         "GATEWAY_CLIENT_SECRET": "s3cret",
-        "DATABASE_URL": "postgresql://app@db.test/toolgate",
+        "DATABASE_URL": dsn,
         "AUDIT_HMAC_KEY": HMAC_KEY,
         "GATEWAY_LOCKFILE_PATH": str(tmp_path / "toolgate.lock.json"),
         "GATEWAY_POLICY_PATH": str(tmp_path / "agents.yaml"),
@@ -556,34 +688,47 @@ def test_cli_serve_builds_from_settings(tmp_path, monkeypatch):
     }
     for k, v in env.items():
         monkeypatch.setenv(k, v)
+    return env
 
-    class FakeDbPool:
-        closed = False
 
-        async def close(self):
-            self.closed = True
+def test_cli_serve_builds_from_settings_with_db_down(serve_env, monkeypatch):
+    from starlette.applications import Starlette
+    from toolgate_gateway import cli
 
-    db = FakeDbPool()
     seen = {}
+    real_create_pool = cli.create_pool
 
-    async def fake_create_pool(dsn):
-        seen["dsn"] = dsn
-        return db
+    async def spy_create_pool(dsn, **kwargs):
+        seen["dsn"], seen["kwargs"] = dsn, kwargs
+        seen["db"] = await real_create_pool(dsn, **kwargs)  # must not connect
+        return seen["db"]
 
     async def fake_serve(self, sockets=None):
         seen["config"] = self.config
 
-    monkeypatch.setattr(cli, "create_pool", fake_create_pool)
+    monkeypatch.setattr(cli, "create_pool", spy_create_pool)
     monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
 
     assert cli.main(["serve"]) == 0
     config = seen["config"]
     assert (config.host, config.port) == ("127.0.0.1", 8299)
-    from starlette.applications import Starlette
-
     assert isinstance(config.app, Starlette)
-    assert seen["dsn"] == "postgresql://app@db.test/toolgate"
-    assert db.closed
+    assert seen["dsn"] == serve_env["DATABASE_URL"]
+    assert seen["kwargs"] == {"min_size": 0}
+    assert seen["db"]._closed
+
+
+def test_cli_serve_unexpected_error_prints_type_only(serve_env, monkeypatch, capsys):
+    from toolgate_gateway import cli
+
+    async def failing_serve(self, sockets=None):
+        raise RuntimeError("leaky-detail s3cret")
+
+    monkeypatch.setattr(uvicorn.Server, "serve", failing_serve)
+    assert cli.main(["serve"]) == 1
+    err = capsys.readouterr().err
+    assert "RuntimeError" in err
+    assert "leaky-detail" not in err and "s3cret" not in err
 
 
 def test_cli_serve_reports_missing_settings_without_values(monkeypatch, capsys):

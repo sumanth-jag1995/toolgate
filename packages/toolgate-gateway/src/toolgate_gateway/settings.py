@@ -23,6 +23,10 @@ class GatewaySettings(BaseSettings):
     # Externally visible base URL; the protected resource is ``<public_url>/mcp``
     # (RFC 9728 metadata and the WWW-Authenticate resource_metadata link).
     public_url: str = "http://localhost:8200"
+    # MCP sessions: a cap on concurrently open sessions (503 beyond it) and
+    # the idle time after which a session is closed.
+    max_sessions: int = 1000
+    session_idle_timeout_s: float = 1800.0
     otlp_endpoint: str | None = Field(
         default=None, validation_alias="OTEL_EXPORTER_OTLP_ENDPOINT"
     )

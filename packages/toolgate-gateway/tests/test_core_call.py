@@ -355,6 +355,7 @@ async def test_audit_unhealthy_refuses_call(make_core, caplog):
 
 async def test_audit_queue_full_refuses_call(make_core):
     writer = AuditWriter(None, max_queue=1)  # type: ignore[arg-type]
+    writer._healthy = True  # as after a successful startup probe (never started)
     core, _, calls, _ = await make_core(audit=writer)
     result = await core.call_tool(
         "servicing", "a", "core-read.get_claim_status", {"claim_id": "C-1"}

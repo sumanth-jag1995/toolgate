@@ -30,5 +30,10 @@ async def migrate(admin_dsn: str, app_password: str) -> None:
         await conn.close()
 
 
-async def create_pool(dsn: str) -> asyncpg.Pool:
-    return await asyncpg.create_pool(dsn, min_size=1, max_size=5, command_timeout=5.0)
+async def create_pool(dsn: str, *, min_size: int = 1) -> asyncpg.Pool:
+    """App-role pool. With ``min_size=0`` creating it does not connect, so a
+    caller can start while Postgres is down (the audit writer's probe then
+    decides when calls are accepted). Connects time out after 5 s."""
+    return await asyncpg.create_pool(
+        dsn, min_size=min_size, max_size=5, command_timeout=5.0, timeout=5.0
+    )

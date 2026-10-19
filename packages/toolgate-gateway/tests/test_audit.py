@@ -79,6 +79,7 @@ async def test_writer_batches_and_flushes(app_pool, admin_dsn):
 
     with patch.object(type(app_pool), "executemany", spy):
         await writer.start()
+        await _until(lambda: writer.accepting)
         assert all(writer.submit(_rec(i)) for i in range(120))
         await writer.stop()
     assert 1 <= calls <= 3
@@ -111,6 +112,7 @@ async def test_decision_check_constraint(app_pool):
 
 async def test_queue_full_returns_false():
     writer = AuditWriter(None, max_queue=2)  # type: ignore[arg-type]
+    writer._healthy = True  # as after a successful startup probe
     assert writer.accepting
     assert writer.submit(_rec(1))
     assert writer.submit(_rec(2))
@@ -121,7 +123,7 @@ async def test_queue_full_returns_false():
 async def test_accepting_false_when_stopped():
     w = AuditWriter(FakePool())
     await w.start()
-    assert w.accepting
+    await _until(lambda: w.accepting)
     await w.stop()
     assert not w.accepting
 
@@ -134,6 +136,7 @@ async def test_db_down_marks_unhealthy():
         pool = await create_pool(_app_dsn(admin))
         writer = AuditWriter(pool, flush_interval_s=0.05)
         await writer.start()
+        await _until(lambda: writer.accepting)
         assert writer.submit(_rec(1))
         await asyncio.sleep(0.3)
         assert writer.healthy
@@ -189,6 +192,7 @@ async def test_writer_recovers_after_transient_failure():
     pool = FakePool()
     w = AuditWriter(pool, flush_interval_s=0.01, probe_min_s=0.05, probe_max_s=0.1)
     await w.start()
+    await _until(lambda: w.healthy)
     pool.down = True
     assert w.submit(_rec(1))
     await _until(lambda: not w.healthy)
@@ -205,13 +209,14 @@ async def test_queued_rows_survive_outage():
     w = AuditWriter(
         pool, flush_interval_s=0.01, batch_size=2, probe_min_s=0.05, probe_max_s=0.1
     )
-    pool.down = True
-    for i in range(6):
-        assert w.submit(_rec(i))
     await w.start()
-    await _until(lambda: not w.healthy)
+    await _until(lambda: w.healthy)
+    pool.down = True
+    for i in range(6):  # no await: all queued before the writer runs
+        assert w.submit(_rec(i))
+    await _until(lambda: w.dropped_count == 2)
     # First batch (2 rows) is dropped after its one retry; the rest stay queued.
-    assert w.dropped_count == 2
+    assert not w.healthy
     pool.down = False
     await _until(lambda: w.healthy)
     await w.stop()
@@ -221,13 +226,53 @@ async def test_queued_rows_survive_outage():
 
 async def test_hung_db_marks_unhealthy_and_stop_returns():
     pool = FakePool()
-    pool.hang = True
     w = AuditWriter(pool, flush_interval_s=0.01, op_timeout_s=0.1, probe_min_s=0.05)
     await w.start()
+    await _until(lambda: w.healthy)
+    pool.hang = True
     assert w.submit(_rec(1))
     await _until(lambda: not w.healthy, secs=3)
     await asyncio.wait_for(w.stop(), 5)
     assert w.submit(_rec(2)) is False
+
+
+async def test_not_accepting_until_first_probe():
+    pool = FakePool()
+    w = AuditWriter(pool, probe_min_s=0.05, probe_max_s=0.1)
+    # Cold start: nothing is known about the database yet.
+    assert not w.healthy and not w.accepting
+    assert w.submit(_rec(1)) is False
+    await w.start()
+    await _until(lambda: w.accepting)
+    assert w.submit(_rec(2))
+    await w.stop()
+    assert [r[2] for r in pool.rows] == ["core-read.t2"]
+
+
+async def test_cold_start_with_db_down_recovers(caplog):
+    pool = FakePool()
+    pool.down = True
+    w = AuditWriter(pool, probe_min_s=0.02, probe_max_s=0.05)
+    await w.start()
+    await asyncio.sleep(0.2)  # several failed probes
+    assert not w.accepting
+    assert w.submit(_rec(1)) is False
+    assert any("audit database unreachable" in r.getMessage() for r in caplog.records)
+    pool.down = False
+    await _until(lambda: w.accepting)
+    assert w.submit(_rec(2))
+    await w.stop()
+    assert [r[2] for r in pool.rows] == ["core-read.t2"]
+
+
+async def test_stop_while_never_healthy_returns():
+    pool = FakePool()
+    pool.down = True
+    w = AuditWriter(pool, probe_min_s=0.05, probe_max_s=0.1)
+    await w.start()
+    await asyncio.sleep(0.1)
+    await asyncio.wait_for(w.stop(), 2)
+    assert not w.accepting
 
 
 async def test_submit_after_stop_returns_false():

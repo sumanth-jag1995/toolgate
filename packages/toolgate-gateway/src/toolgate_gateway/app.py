@@ -138,6 +138,8 @@ def build_app(
         json_response=False,
         stateless=False,
         security_settings=None,
+        max_sessions=settings.max_sessions,
+        session_idle_timeout=settings.session_idle_timeout_s,
     )
 
     resource_url = AnyHttpUrl(settings.public_url.rstrip("/") + MCP_PATH)
@@ -167,10 +169,12 @@ def build_app(
 
     @asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
+        # The audit writer refuses calls until its first probe succeeds, so
+        # the gateway starts (and lists tools) while Postgres is down.
         await core.audit.start()
         try:
-            await core.pool.start()  # a down downstream is logged, not fatal
             try:
+                await core.pool.start()  # a down downstream is logged, not fatal
                 core.pool.on_list_changed = on_list_changed
                 try:
                     await core.refresh_snapshot()

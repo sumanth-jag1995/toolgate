@@ -76,7 +76,9 @@ class AuditWriter:
         self._wake = asyncio.Event()
         self._stop_event = asyncio.Event()
         self._closed = False
-        self._healthy = True
+        # Fail closed from a cold start: not healthy (so not accepting) until
+        # the first successful probe, which start() kicks off.
+        self._healthy = False
         self.dropped_count = 0
 
     @property
@@ -155,10 +157,18 @@ class AuditWriter:
     async def _recover(self) -> None:
         """Probe with exponential backoff until the DB answers (or we stop)."""
         delay = self._probe_min
+        warned = False
         while not self._healthy:
             if await self._probe():
                 self._healthy = True
+                if warned:
+                    log.info("audit database reachable; accepting calls")
                 return
+            if not warned:
+                log.warning(
+                    "audit database unreachable; calls refused until it answers"
+                )
+                warned = True
             if self._stop_event.is_set():
                 return
             with contextlib.suppress(TimeoutError):
