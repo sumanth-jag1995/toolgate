@@ -106,6 +106,18 @@ def _hex_cores(token: str) -> set[str]:
     return out
 
 
+def _national_in_run(national: str, run: str) -> bool:
+    """National number at the start of a digit run, after an optional
+    0 / 44 / 0044 / (0) prefix, with no separator inside its first 4 digits."""
+    pos = [i for i, c in enumerate(run) if c.isdecimal()]
+    digits = "".join(run[i] for i in pos)
+    m = re.match(r"(?:0044|44|0)?0?" + re.escape(national), digits)
+    if not m:
+        return False
+    start = m.end() - len(national)
+    return pos[start + 3] - pos[start] == 3
+
+
 def _mostly_garbage(dec: str) -> bool:
     sample = dec[:4096]
     bad = len(sample) - len(_BAD_RE.sub("", sample))
@@ -199,10 +211,7 @@ class CanaryMatcher:
     def _match(self, text: str, found: set[str], st: _State) -> None:
         text = _normalise(text)
         folded = text.casefold()
-        deep = st.scan_bytes > 0
         st.scan_bytes -= len(text)
-        if not deep:
-            st.truncated = True
         runs: list[str] | None = None
         for name, tok in self._tokens.items():
             if name in found:
@@ -210,19 +219,14 @@ class CanaryMatcher:
             if tok in folded:
                 found.add(name)
                 continue
-            if not deep:
-                continue
             if any(c in text for c in self._cores[name]):
                 found.add(name)
                 continue
             nat = self._national.get(name)
             if nat:
                 if runs is None:
-                    runs = [
-                        _NON_DIGIT_RE.sub("", m.group(0))
-                        for m in _DIGIT_RUN_RE.finditer(text)
-                    ]
-                if any(nat in r for r in runs):
+                    runs = [m.group(0) for m in _DIGIT_RUN_RE.finditer(text)]
+                if any(_national_in_run(nat, r) for r in runs):
                     found.add(name)
 
     def _scan(self, text: str, depth: int, found: set[str], st: _State) -> None:
@@ -237,19 +241,19 @@ class CanaryMatcher:
             if unwrapped != text:
                 b64_sources.append(unwrapped)
                 self._match(unwrapped, found, st)
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         byte_budget = 2 * len(text) + 4096
-        for sources, regex, decode in (
-            (b64_sources, _B64_RE, _decode_b64_at_offsets),
-            (variants, _HEX_RE, _decode_hex_at_offsets),
+        for kind, sources, regex, decode in (
+            ("b64", b64_sources, _B64_RE, _decode_b64_at_offsets),
+            ("hex", variants, _HEX_RE, _decode_hex_at_offsets),
         ):
             for src in sources:
                 for m in regex.finditer(src):
                     cand = m.group(0)
-                    if cand in seen:
+                    if (kind, cand) in seen:
                         continue
-                    seen.add(cand)
-                    if st.ops <= 0 or byte_budget <= 0:
+                    seen.add((kind, cand))
+                    if st.ops <= 0 or byte_budget <= 0 or st.scan_bytes <= 0:
                         st.truncated = True
                         return
                     st.ops -= 1
@@ -270,6 +274,13 @@ class SinkRequest:
     # Canary fields found in Authorization/Cookie values (names only, no values).
     header_matches: frozenset[str] = frozenset()
     parse_error: bool = False
+    truncated: bool = False  # a matcher work cap was hit scanning this request
+
+
+@dataclass
+class LeakReport:
+    fields: set[str]
+    truncated: bool  # True: absence of a field is not proof of no leak
 
 
 def _default_matcher() -> CanaryMatcher:
@@ -312,13 +323,24 @@ class SinkServer:
     def reset(self) -> None:
         self.requests = []
 
-    def leaked_fields(self, matcher: CanaryMatcher) -> set[str]:
+    def leak_report(self, matcher: CanaryMatcher | None = None) -> LeakReport:
+        matcher = matcher or self._get_matcher()
         found: set[str] = set()
+        truncated = False
         for r in self.requests:
             blob = "\n".join([r.path, r.query, r.body_text, *r.headers.values()])
-            found |= matcher.find(blob)
-            found |= r.header_matches
-        return found
+            res = matcher.find_detailed(blob)
+            found |= res.fields | r.header_matches
+            truncated = truncated or res.truncated or r.truncated
+        return LeakReport(found, truncated)
+
+    def leaked_fields(self, matcher: CanaryMatcher) -> set[str]:
+        return self.leak_report(matcher).fields
+
+    def _get_matcher(self) -> CanaryMatcher:
+        if self._header_matcher is None:
+            self._header_matcher = _default_matcher()
+        return self._header_matcher
 
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -344,13 +366,14 @@ class SinkServer:
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
 
-    def _record_parse_error(self, line: bytes) -> None:
+    def _record_parse_error(self, raw: bytes, header_matches: set[str]) -> None:
         self.requests.append(
             SinkRequest(
                 method="",
                 path="",
                 query="",
-                body_text=line[:200].decode("latin-1"),
+                body_text=raw[:MAX_BODY].decode("utf-8", errors="replace"),
+                header_matches=frozenset(header_matches),
                 parse_error=True,
             )
         )
@@ -371,62 +394,76 @@ class SinkServer:
         line = await asyncio.wait_for(reader.readline(), IDLE_TIMEOUT)
         if not line.strip():
             return
+        matcher = self._get_matcher()
+        head = bytearray(line[:8192])  # what was read, with secret values redacted
+        body = bytearray()
+        headers: dict[str, str] = {}
+        header_matches: set[str] = set()
+        truncated = False
         try:
             method, target, *_ = line.decode("latin-1").split()
-            headers: dict[str, str] = {}
             while True:
                 h = await asyncio.wait_for(reader.readline(), IDLE_TIMEOUT)
                 if h in (b"\r\n", b"\n", b""):
                     break
                 name, _, value = h.decode("latin-1").partition(":")
-                headers[name.strip().lower()] = value.strip()
-            body = await self._read_body(reader, headers)
-        except ValueError:
-            self._record_parse_error(line)
-            await self._respond(writer, b"400 Bad Request", b'{"ok": false}')
+                name = name.strip().lower()
+                value = value.strip()
+                headers[name] = value
+                if name in _NO_STORE_HEADERS:
+                    res = matcher.find_detailed(value)
+                    header_matches |= res.fields
+                    truncated = truncated or res.truncated
+                    head += f"{name}: [redacted]\r\n".encode()
+                elif len(head) < MAX_BODY:
+                    head += h
+            await self._read_body(reader, headers, body)
+        except (ValueError, asyncio.IncompleteReadError, TimeoutError):
+            self._record_parse_error(
+                bytes(head) + b"\r\n" + bytes(body), header_matches
+            )
+            with contextlib.suppress(ConnectionError):
+                await self._respond(writer, b"400 Bad Request", b'{"ok": false}')
             return
         path, _, query = target.partition("?")
-        matcher = self._header_matcher or _default_matcher()
-        self._header_matcher = matcher
-        header_matches: set[str] = set()
-        for k in _NO_STORE_HEADERS:
-            if k in headers:
-                header_matches |= matcher.find(headers[k])
         self.requests.append(
             SinkRequest(
                 method=method,
                 path=path,
                 query=query,
-                body_text=body.decode("utf-8", errors="replace"),
+                body_text=bytes(body).decode("utf-8", errors="replace"),
                 headers={
                     k: v for k, v in headers.items() if k not in _NO_STORE_HEADERS
                 },
                 header_matches=frozenset(header_matches),
+                truncated=truncated,
             )
         )
         await self._respond(writer, b"200 OK", json.dumps({"ok": True}).encode())
 
     @staticmethod
     async def _read_body(
-        reader: asyncio.StreamReader, headers: dict[str, str]
-    ) -> bytes:
+        reader: asyncio.StreamReader, headers: dict[str, str], buf: bytearray
+    ) -> None:
+        """Append the body to buf (capped at MAX_BODY) as it is read."""
         if "chunked" in headers.get("transfer-encoding", "").lower():
-            buf = bytearray()
             while True:
                 size_line = (await reader.readline()).split(b";")[0].strip()
                 size = int(size_line or b"0", 16)
                 if size == 0:
                     while (await reader.readline()) not in (b"\r\n", b"\n", b""):
                         pass
-                    return bytes(buf)
-                chunk = await reader.readexactly(size)
+                    return
+                if size > MAX_BODY:
+                    raise ValueError("chunk too large")
+                try:
+                    chunk = await reader.readexactly(size)
+                except asyncio.IncompleteReadError as e:
+                    buf += e.partial[: max(MAX_BODY - len(buf), 0)]
+                    raise
                 await reader.readexactly(2)
-                room = MAX_BODY - len(buf)
-                if room > 0:
-                    buf += chunk[:room]
-        length = int(headers.get("content-length", "0") or 0)
-        data = bytearray()
-        remaining = length
+                buf += chunk[: max(MAX_BODY - len(buf), 0)]
+        remaining = int(headers.get("content-length", "0") or 0)
         while remaining > 0:
             chunk = await asyncio.wait_for(
                 reader.read(min(remaining, 65536)), IDLE_TIMEOUT
@@ -434,6 +471,4 @@ class SinkServer:
             if not chunk:
                 break
             remaining -= len(chunk)
-            if len(data) < MAX_BODY:
-                data += chunk[: MAX_BODY - len(data)]
-        return bytes(data)
+            buf += chunk[: max(MAX_BODY - len(buf), 0)]

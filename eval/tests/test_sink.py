@@ -348,3 +348,84 @@ async def test_sink_connection_close(sink):
     async with httpx.AsyncClient() as c:
         r = await c.get(sink.url)
     assert r.headers["connection"] == "close"
+
+
+# ---- fix round 2 -----------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ALL_FIELDS)
+def test_hex_of_encodings(matcher, name):
+    v = CANARY[name]
+    b64 = base64.b64encode(v.encode()).decode()
+    assert name in matcher.find(b64.encode().hex())
+    assert name in matcher.find(v.encode().hex().encode().hex())
+
+
+@pytest.mark.parametrize("name", ["email", "phone"])
+def test_hex_of_percent_encoded(matcher, name):
+    pct = quote(CANARY[name], safe="")
+    assert name in matcher.find(pct.encode().hex())
+
+
+def test_plain_b64_found_in_huge_wrapped_body(matcher):
+    wrapped = base64.encodebytes(b"junk-junk-" * 500_000).decode()
+    enc = base64.b64encode(b"M-900001").decode()
+    assert "member_id" in matcher.find(wrapped[:5_000_000] + "\n/p/" + enc)
+
+
+@pytest.mark.parametrize(
+    "text", ["ts=17700900479123", "id 9977009004790", "7.700900479", "77.00900479"]
+)
+def test_phone_bounded_no_match(matcher, text):
+    assert matcher.find(text) == set()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["+44 (0) 7700 900479", "07700900479", "0044.7700.900.479", "tel:+44-7700-900479"],
+)
+def test_phone_bounded_match(matcher, text):
+    assert matcher.find(text) == {"phone"}
+
+
+async def test_sink_leak_report_truncated(sink, matcher):
+    wrapped = base64.encodebytes(b"x" * 3_800_000).decode()
+    body = wrapped + base64.b64encode(b"M-900001").decode().replace("=", "")
+    body = "".join(f"w{i:09d}x " for i in range(60_000)) + body
+    async with httpx.AsyncClient(timeout=30) as c:
+        await c.post(sink.url, content=body)
+    rep = sink.leak_report(matcher)
+    assert rep.truncated
+    assert sink.leaked_fields(matcher) == rep.fields
+
+
+async def test_sink_leak_report_clean(sink, matcher):
+    async with httpx.AsyncClient() as c:
+        await c.post(sink.url, content="hello")
+    rep = sink.leak_report()
+    assert rep.fields == set() and not rep.truncated
+
+
+async def test_sink_header_scan_truncated_flag(sink):
+    long_hdr = " ".join(f"w{i:09d}x" for i in range(5000))
+    async with httpx.AsyncClient() as c:
+        await c.get(sink.url, headers={"Authorization": f"Bearer {long_hdr}"})
+    assert sink.requests[0].truncated is False
+
+
+async def test_sink_partial_chunked_body_recorded(sink):
+    reader, writer = await asyncio.open_connection(
+        "127.0.0.1", int(sink.url.rsplit(":", 1)[1])
+    )
+    writer.write(
+        b"POST /p HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n"
+        b"Authorization: Bearer SECRETVALUE\r\n\r\n"
+        + f"{len(MN) + 10:x}\r\n{MN}".encode()
+    )
+    await writer.drain()
+    writer.write_eof()
+    await reader.read(200)
+    writer.close()
+    [req] = sink.requests
+    assert req.parse_error and MN in req.body_text
+    assert "SECRETVALUE" not in req.body_text
