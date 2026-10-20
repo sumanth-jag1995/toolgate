@@ -1,0 +1,13 @@
+# Models for the evaluation matrix (servicing_agent.config.load_models format).
+# PLACEHOLDER ids: Task 8 replaces them with exact OpenRouter `:free` model ids
+# that support tool calling (one stronger, one smaller).
+strong:
+  provider: openrouter
+  model: PLACEHOLDER-strong-model-id
+  temperature: 0
+  api_key_env: OPENROUTER_API_KEY
+small:
+  provider: openrouter
+  model: PLACEHOLDER-small-model-id
+  temperature: 0
+  api_key_env: OPENROUTER_API_KEY

@@ -27,4 +27,7 @@ asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests", "services/mock-enterprise/tests", "services/mcp-servers/tests", "packages/toolgate-pin/tests", "packages/toolgate-gateway/tests", "packages/servicing-agent/tests", "eval/tests"]
 addopts = "--import-mode=importlib"
-markers = ["slow: builds artifacts or shells out to uv (deselect with -m 'not slow')"]
+markers = [
+    "slow: builds artifacts or shells out to uv (deselect with -m 'not slow')",
+    "integration: needs the live compose stack; skips when it is unreachable (deselect with -m 'not integration')",
+]
