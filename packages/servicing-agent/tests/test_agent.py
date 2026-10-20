@@ -1,4 +1,5 @@
 import asyncio
+import json
 from dataclasses import fields
 
 import httpx
@@ -153,6 +154,44 @@ async def test_cancellation_propagates(toolkit, make_model):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_reserved_argument_names_do_not_break_the_episode(
+    toolkit, make_model, make_tool_call
+):
+    sent = {
+        k: f"{k}-value"
+        for k in ("self", "config", "run_manager", "callbacks", "args", "kwargs")
+    }
+    model = make_model(
+        script=[make_tool_call("echo_reserved", sent, "c1"), AIMessage(content="ok")]
+    )
+    trace = await ServicingAgent(model, toolkit).run("Echo")
+    assert trace.stop_reason == "final"
+    assert trace.error is None
+    assert trace.tool_calls == [ToolCallRecord("echo_reserved", True)]
+    tool_msg = next(m for m in model.seen[1] if isinstance(m, ToolMessage))
+    assert json.loads(tool_msg.content) == sent
+
+
+async def test_unexpected_tool_exception_becomes_tool_message(
+    toolkit, make_model, make_tool_call, monkeypatch
+):
+    tool = next(t for t in toolkit.tools if t.name == "big")
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("tool-side-secret")
+
+    monkeypatch.setattr(type(tool), "_arun", boom)
+    model = make_model(
+        script=[make_tool_call("big", {}, "c1"), AIMessage(content="recovered")]
+    )
+    trace = await ServicingAgent(model, toolkit).run("Go")
+    assert trace.stop_reason == "final"
+    assert trace.final_text == "recovered"
+    assert "tool-side-secret" not in repr(trace)
+    tool_msg = next(m for m in model.seen[1] if isinstance(m, ToolMessage))
+    assert tool_msg.status == "error"
 
 
 def test_system_prompt_is_plain_servicing_prompt():

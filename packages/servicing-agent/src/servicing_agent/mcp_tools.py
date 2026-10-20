@@ -19,10 +19,10 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Self
+from typing import Any, Literal, Self
 from urllib.parse import urlsplit
 
-from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.tools import BaseTool
 from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, PaginatedRequestParams, TextContent, Tool
 
@@ -43,9 +43,23 @@ class ToolCallRecord:
 
 @dataclass(frozen=True)
 class ToolCollision:
+    """Two tools competing for one name.
+
+    ``kind="name"``: both servers list the same MCP name; the first is kept
+    and the tool from ``dropped_url`` is not exposed. ``kind="sanitised"``:
+    distinct MCP names that sanitise to the same model-facing name; both are
+    exposed, and ``name`` (from ``dropped_url``) gets a ``_2``-style suffix
+    while the tool from ``kept_url`` keeps the plain sanitised name.
+    """
+
     name: str
     kept_url: str
     dropped_url: str
+    kind: Literal["name", "sanitised"] = "name"
+
+
+def _sanitise(name: str) -> str:
+    return _UNSAFE_NAME_CHARS.sub("_", name)[:MAX_NAME_CHARS] or "tool"
 
 
 def sanitise_tool_names(names: Sequence[str]) -> list[str]:
@@ -54,7 +68,7 @@ def sanitise_tool_names(names: Sequence[str]) -> list[str]:
     out: list[str] = []
     taken: set[str] = set()
     for name in names:
-        base = _UNSAFE_NAME_CHARS.sub("_", name)[:MAX_NAME_CHARS] or "tool"
+        base = _sanitise(name)
         candidate, n = base, 1
         while candidate in taken:
             n += 1
@@ -92,6 +106,28 @@ def url_display(url: str) -> str:
     return f"{parts.scheme}://{host}{parts.path}"
 
 
+class McpTool(BaseTool):
+    """One MCP tool. The model's argument dict is passed to ``call_tool``
+    whole and untouched: it is never spread into Python keyword arguments,
+    so names such as ``self``, ``config`` or ``run_manager`` cannot collide
+    with LangChain's own parameters."""
+
+    mcp_call: Callable[[dict[str, Any]], Awaitable[str]]
+
+    def _to_args_and_kwargs(
+        self, tool_input: str | dict[str, Any], tool_call_id: str | None
+    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        if not isinstance(tool_input, dict):
+            raise TypeError("tool arguments must be a JSON object")
+        return (dict(tool_input),), {}
+
+    def _run(self, *args: Any, **kwargs: Any) -> str:
+        raise NotImplementedError("MCP tools are async only")
+
+    async def _arun(self, *args: Any, **kwargs: Any) -> str:
+        return await self.mcp_call(args[0])
+
+
 class McpToolkit:
     """LangChain tools over open MCP sessions plus a names-only call log."""
 
@@ -118,23 +154,30 @@ class McpToolkit:
     def real_name(self, exposed_name: str) -> str:
         return self._real_names[exposed_name]
 
-    def _add_tools(self, entries: list[tuple[ClientSession, Tool]]) -> None:
-        exposed = sanitise_tool_names([tool.name for _, tool in entries])
-        for name, (session, tool) in zip(exposed, entries, strict=True):
+    def _add_tools(self, entries: list[tuple[str, ClientSession, Tool]]) -> None:
+        exposed = sanitise_tool_names([tool.name for _, _, tool in entries])
+        url_of: dict[str, str] = {}
+        for name, (url, session, tool) in zip(exposed, entries, strict=True):
+            base = _sanitise(tool.name)
+            if name != base:
+                self.collisions.append(
+                    ToolCollision(tool.name, url_of[base], url, kind="sanitised")
+                )
+            url_of[name] = url
             self._real_names[name] = tool.name
             self._tools.append(
-                StructuredTool(
+                McpTool(
                     name=name,
                     description=tool.description or "",
                     args_schema=dict(tool.inputSchema),
-                    coroutine=self._caller(session, tool.name),
+                    mcp_call=self._caller(session, tool.name),
                 )
             )
 
     def _caller(
         self, session: ClientSession, real_name: str
-    ) -> Callable[..., Awaitable[str]]:
-        async def call(**arguments: Any) -> str:
+    ) -> Callable[[dict[str, Any]], Awaitable[str]]:
+        async def call(arguments: dict[str, Any]) -> str:
             try:
                 result = await session.call_tool(real_name, arguments=arguments)
             except Exception as exc:  # noqa: BLE001 - shown to the model as text
@@ -148,8 +191,15 @@ class McpToolkit:
     async def close(self) -> None:
         """Close every session. Idempotent; safe from any task."""
         self._closing.set()
-        if self._keeper is not None:
-            await self._keeper
+        keeper = self._keeper
+        if keeper is None:
+            return
+        if not keeper.done():
+            # wait() neither raises the keeper's outcome nor cancels it if
+            # this task is cancelled meanwhile.
+            await asyncio.wait({keeper})
+        if not keeper.cancelled():
+            keeper.exception()  # mark retrieved; keep_open swallows errors
 
     async def __aenter__(self) -> Self:
         return self
@@ -260,7 +310,7 @@ async def connect(
         # in one task: this one, for the toolkit's whole life.
         try:
             async with AsyncExitStack() as stack:
-                entries: list[tuple[ClientSession, Tool]] = []
+                entries: list[tuple[str, ClientSession, Tool]] = []
                 owner: dict[str, str] = {}
                 for url in urls:
                     session, listed = await _open(
@@ -269,11 +319,13 @@ async def connect(
                     for tool in listed:
                         if tool.name in owner:
                             toolkit.collisions.append(
-                                ToolCollision(tool.name, owner[tool.name], url)
+                                ToolCollision(
+                                    tool.name, owner[tool.name], url, kind="name"
+                                )
                             )
                             continue
                         owner[tool.name] = url
-                        entries.append((session, tool))
+                        entries.append((url, session, tool))
                 toolkit._add_tools(entries)
                 ready.set_result(None)
                 await toolkit._closing.wait()

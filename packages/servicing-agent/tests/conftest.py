@@ -4,6 +4,7 @@ over streamable HTTP by uvicorn on 127.0.0.1 (no external network)."""
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 from collections.abc import Callable
 from typing import Any
@@ -81,6 +82,22 @@ def build_server(name: str = "test-server") -> FastMCP:
     def broken(claim_id: str) -> str:
         raise ValueError("backend unavailable")
 
+    @server.tool(name="echo_reserved", description="Echoes its arguments.")
+    def echo_reserved(
+        self: str, config: str, run_manager: str, callbacks: str, args: str, kwargs: str
+    ) -> str:
+        return json.dumps(
+            {
+                "self": self,
+                "config": config,
+                "run_manager": run_manager,
+                "callbacks": callbacks,
+                "args": args,
+                "kwargs": kwargs,
+            },
+            sort_keys=True,
+        )
+
     @server.tool(name="big", description="Returns a large result.")
     def big() -> str:
         return "x" * 20000
@@ -116,7 +133,15 @@ async def serve():
             )
         )
         task = asyncio.create_task(server.serve())
+        deadline = asyncio.get_running_loop().time() + 10
         while not server.started:
+            if task.done():
+                task.result()  # surfaces the startup error
+                raise RuntimeError("uvicorn exited before starting")
+            if asyncio.get_running_loop().time() > deadline:
+                server.should_exit = True
+                await task
+                raise TimeoutError("uvicorn did not start within 10 s")
             await asyncio.sleep(0.01)
         running.append((server, task))
         return f"http://127.0.0.1:{port}/mcp", seen_auth

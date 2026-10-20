@@ -76,6 +76,18 @@ class _ModelCalls(AsyncCallbackHandler):
 
 
 class ServicingAgent:
+    """A bounded ReAct agent over an MCP toolkit.
+
+    Use one toolkit per episode (or run episodes on a toolkit strictly one
+    after another): a run's ``tool_calls`` are the toolkit records made since
+    the run started, so concurrent runs on one toolkit would mix them.
+
+    ``steps`` counts model calls *started*, including one that raised (a
+    model error on the first call gives ``steps == 1``). Unexpected tool-side
+    exceptions are returned to the model as error tool messages, so they do
+    not end the episode.
+    """
+
     def __init__(
         self, chat_model: BaseChatModel, toolkit: McpToolkit, *, max_steps: int = 15
     ) -> None:
@@ -83,7 +95,7 @@ class ServicingAgent:
             raise ValueError("max_steps must be at least 1")
         self._toolkit = toolkit
         self._max_steps = max_steps
-        from langgraph.prebuilt import create_react_agent
+        from langgraph.prebuilt import ToolNode, create_react_agent
 
         with warnings.catch_warnings():
             # create_react_agent is deprecated in favour of langchain.agents,
@@ -92,7 +104,9 @@ class ServicingAgent:
                 "ignore", message=r".*create_react_agent has been moved.*"
             )
             self._graph = create_react_agent(
-                chat_model, toolkit.tools, prompt=SYSTEM_PROMPT
+                chat_model,
+                ToolNode(toolkit.tools, handle_tool_errors=True),
+                prompt=SYSTEM_PROMPT,
             )
 
     async def run(self, task_prompt: str) -> EpisodeTrace:
