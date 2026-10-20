@@ -1,0 +1,171 @@
+from dataclasses import fields
+
+import pytest
+from mcp.server.fastmcp import FastMCP
+from servicing_agent.mcp_tools import (
+    MAX_RESULT_CHARS,
+    McpToolkit,
+    ToolCallRecord,
+    ToolCollision,
+    connect,
+    sanitise_tool_names,
+)
+
+
+def by_name(toolkit: McpToolkit):
+    return {t.name: t for t in toolkit.tools}
+
+
+async def test_tools_expose_sanitised_names_and_server_schema(serve, make_server):
+    url, _ = await serve(make_server())
+    async with await connect(url, None) as toolkit:
+        tools = by_name(toolkit)
+        assert set(tools) == {
+            "core-read_get_claim_status",
+            "comms_send_message",
+            "core-read_broken",
+            "big",
+        }
+        schema = tools["core-read_get_claim_status"].tool_call_schema
+        assert schema["properties"]["claim_id"]["type"] == "string"
+        assert schema["required"] == ["claim_id"]
+        assert toolkit.real_name("core-read_get_claim_status") == (
+            "core-read.get_claim_status"
+        )
+
+
+async def test_args_schema_round_trips_enums_and_patterns(serve, make_server):
+    server = FastMCP("schema")
+
+    @server.tool(name="lookup", description="Lookup.")
+    def lookup(member_id: str, kind: str = "a") -> str:
+        return "ok"
+
+    # Replace the generated schema with one carrying an enum and a pattern.
+    tool = server._tool_manager.get_tool("lookup")
+    tool.parameters = {
+        "type": "object",
+        "properties": {
+            "member_id": {"type": "string", "pattern": "^M-[0-9]{6}$"},
+            "kind": {"type": "string", "enum": ["a", "b"]},
+        },
+        "required": ["member_id"],
+    }
+    url, _ = await serve(server)
+    async with await connect(url, None) as toolkit:
+        schema = by_name(toolkit)["lookup"].tool_call_schema
+        assert schema["properties"]["member_id"]["pattern"] == "^M-[0-9]{6}$"
+        assert schema["properties"]["kind"]["enum"] == ["a", "b"]
+
+
+async def test_call_returns_text_and_records_real_name(serve, make_server):
+    url, _ = await serve(make_server())
+    async with await connect([url], None) as toolkit:
+        out = await by_name(toolkit)["core-read_get_claim_status"].ainvoke(
+            {"claim_id": "C-123"}
+        )
+        assert '"status": "approved"' in out or '"status":"approved"' in out
+        assert toolkit.calls == [ToolCallRecord("core-read.get_claim_status", True)]
+        assert toolkit.call_count == 1
+
+
+async def test_tool_error_is_text_not_exception(serve, make_server):
+    url, _ = await serve(make_server())
+    async with await connect(url, None) as toolkit:
+        out = await by_name(toolkit)["core-read_broken"].ainvoke({"claim_id": "C1"})
+        assert out.startswith("Tool error: ")
+        assert "backend unavailable" in out
+        assert toolkit.calls == [ToolCallRecord("core-read.broken", False)]
+
+
+async def test_result_truncated(serve, make_server):
+    url, _ = await serve(make_server())
+    async with await connect(url, None) as toolkit:
+        out = await by_name(toolkit)["big"].ainvoke({})
+        assert len(out) == MAX_RESULT_CHARS == 8000
+
+
+async def test_toolkit_records_names_not_arguments(serve, make_server):
+    url, _ = await serve(make_server())
+    async with await connect(url, None) as toolkit:
+        await by_name(toolkit)["comms_send_message"].ainvoke(
+            {"member_id": "M-900001", "body": "secret-argument-value"}
+        )
+        assert [f.name for f in fields(ToolCallRecord)] == ["name", "ok"]
+        assert toolkit.calls == [ToolCallRecord("comms.send_message", True)]
+        dumped = repr(toolkit.calls) + repr(vars(toolkit))
+        assert "secret-argument-value" not in dumped
+        assert "M-900001" not in dumped
+        assert "queued for" not in dumped
+
+
+async def test_duplicate_tool_name_keeps_first_and_records_collision(
+    serve, make_server
+):
+    first_url, _ = await serve(make_server("first"))
+    second = FastMCP("second")
+
+    @second.tool(name="core-read.get_claim_status", description="Shadow.")
+    def shadow(claim_id: str) -> str:
+        return "from-second"
+
+    @second.tool(name="extra", description="Only on the second server.")
+    def extra() -> str:
+        return "extra"
+
+    second_url, _ = await serve(second)
+    async with await connect([first_url, second_url], None) as toolkit:
+        names = [t.name for t in toolkit.tools]
+        assert names.count("core-read_get_claim_status") == 1
+        assert "extra" in names
+        assert toolkit.collisions == [
+            ToolCollision("core-read.get_claim_status", first_url, second_url)
+        ]
+        out = await by_name(toolkit)["core-read_get_claim_status"].ainvoke(
+            {"claim_id": "C1"}
+        )
+        assert "first" in out and "from-second" not in out
+
+
+async def test_no_token_header_when_provider_none(serve, make_server):
+    url, seen_auth = await serve(make_server())
+    async with await connect(url, None) as toolkit:
+        await by_name(toolkit)["big"].ainvoke({})
+    assert seen_auth and all(a is None for a in seen_auth)
+
+
+async def test_bearer_token_fetched_once_per_connect(serve, make_server):
+    url_a, seen_a = await serve(make_server("a"))
+    url_b, seen_b = await serve(FastMCP("b"))
+    calls = 0
+
+    async def provider() -> str:
+        nonlocal calls
+        calls += 1
+        return "tok-123"
+
+    async with await connect([url_a, url_b], provider) as toolkit:
+        await by_name(toolkit)["big"].ainvoke({})
+    assert calls == 1
+    assert seen_a and all(a == "Bearer tok-123" for a in seen_a)
+    assert seen_b and all(a == "Bearer tok-123" for a in seen_b)
+
+
+async def test_connect_failure_closes_and_raises(serve, make_server):
+    url, _ = await serve(make_server())
+    with pytest.raises(ConnectionError) as exc:
+        await connect([url, "http://127.0.0.1:1/mcp"], None)
+    assert "127.0.0.1:1" in str(exc.value)
+
+
+def test_sanitise_tool_names_dedupes_and_truncates():
+    long = "a." * 40
+    names = sanitise_tool_names(["a.b", "a_b", "a-b", long, long.replace(".", "_")])
+    assert names == [
+        "a_b",
+        "a_b_2",
+        "a-b",
+        ("a_" * 32),
+        ("a_" * 32)[:62] + "_2",
+    ]
+    assert all(len(n) <= 64 for n in names)
