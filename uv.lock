@@ -13,6 +13,7 @@ members = [
     "mock-enterprise",
     "servicing-agent",
     "toolgate",
+    "toolgate-eval",
     "toolgate-gateway",
     "toolgate-mcp-servers",
     "toolgate-pin",
@@ -2425,6 +2426,35 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
     { name = "testcontainers", extras = ["postgres"] },
+]
+
+[[package]]
+name = "toolgate-eval"
+version = "0.1.0"
+source = { editable = "eval" }
+dependencies = [
+    { name = "asyncpg" },
+    { name = "httpx" },
+    { name = "mock-enterprise" },
+    { name = "pyyaml" },
+    { name = "servicing-agent" },
+    { name = "starlette" },
+    { name = "toolgate-gateway" },
+    { name = "toolgate-pin" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "asyncpg", specifier = ">=0.32.0" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "mock-enterprise", editable = "services/mock-enterprise" },
+    { name = "pyyaml", specifier = ">=6" },
+    { name = "servicing-agent", editable = "packages/servicing-agent" },
+    { name = "starlette", specifier = ">=1.8.0" },
+    { name = "toolgate-gateway", editable = "packages/toolgate-gateway" },
+    { name = "toolgate-pin", editable = "packages/toolgate-pin" },
+    { name = "uvicorn", specifier = ">=0.54.0" },
 ]
 
 [[package]]
