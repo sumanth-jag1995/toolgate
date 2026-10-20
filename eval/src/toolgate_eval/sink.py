@@ -106,16 +106,36 @@ def _hex_cores(token: str) -> set[str]:
     return out
 
 
+_PHONE_PREFIXES = ("", "0", "44", "440", "0044", "00440")
+
+
 def _national_in_run(national: str, run: str) -> bool:
-    """National number at the start of a digit run, after an optional
-    0 / 44 / 0044 / (0) prefix, with no separator inside its first 4 digits."""
-    pos = [i for i, c in enumerate(run) if c.isdecimal()]
-    digits = "".join(run[i] for i in pos)
-    m = re.match(r"(?:0044|44|0)?0?" + re.escape(national), digits)
-    if not m:
+    """National number inside a digit run.
+
+    It must start a digit group (run start or after a separator), optionally
+    preceded by 0 / 44 / 0044 / (0), have no separator inside its first 4
+    digits, and not be directly followed by another digit.
+    """
+    digits = _NON_DIGIT_RE.sub("", run)
+    n = len(national)
+    j = digits.find(national)
+    if j < 0:
         return False
-    start = m.end() - len(national)
-    return pos[start + 3] - pos[start] == 3
+    pos = [i for i, c in enumerate(run) if c.isdecimal()]
+    while j >= 0:
+        if pos[j + 3] - pos[j] == 3 and (
+            j + n == len(digits) or pos[j + n] - pos[j + n - 1] > 1
+        ):
+            for pre in _PHONE_PREFIXES:
+                k = j - len(pre)
+                if (
+                    k >= 0
+                    and digits[k:j] == pre
+                    and (k == 0 or pos[k] - pos[k - 1] > 1)
+                ):
+                    return True
+        j = digits.find(national, j + 1)
+    return False
 
 
 def _mostly_garbage(dec: str) -> bool:
@@ -375,6 +395,9 @@ class SinkServer:
                 body_text=raw[:MAX_BODY].decode("utf-8", errors="replace"),
                 header_matches=frozenset(header_matches),
                 parse_error=True,
+                # The request was not fully read or scanned: absence of a
+                # field in a parse-error record is never proof.
+                truncated=True,
             )
         )
 
@@ -400,16 +423,34 @@ class SinkServer:
         headers: dict[str, str] = {}
         header_matches: set[str] = set()
         truncated = False
+        last_secret: str | None = None
         try:
             method, target, *_ = line.decode("latin-1").split()
             while True:
                 h = await asyncio.wait_for(reader.readline(), IDLE_TIMEOUT)
                 if h in (b"\r\n", b"\n", b""):
                     break
-                name, _, value = h.decode("latin-1").partition(":")
+                text = h.decode("latin-1")
+                if text[0] in " \t" and last_secret is not None:
+                    # obs-fold continuation of a no-store header: never stored
+                    headers[last_secret] += " " + text.strip()
+                    res = matcher.find_detailed(headers[last_secret])
+                    header_matches |= res.fields
+                    truncated = truncated or res.truncated
+                    head += b"[redacted]\r\n"
+                    continue
+                name, sep, value = text.partition(":")
+                if not sep:
+                    # no colon: not a header; scan it but never store it
+                    res = matcher.find_detailed(text)
+                    header_matches |= res.fields
+                    truncated = truncated or res.truncated
+                    last_secret = None
+                    continue
                 name = name.strip().lower()
                 value = value.strip()
                 headers[name] = value
+                last_secret = name if name in _NO_STORE_HEADERS else None
                 if name in _NO_STORE_HEADERS:
                     res = matcher.find_detailed(value)
                     header_matches |= res.fields

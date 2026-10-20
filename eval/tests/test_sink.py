@@ -396,6 +396,7 @@ async def test_sink_leak_report_truncated(sink, matcher):
         await c.post(sink.url, content=body)
     rep = sink.leak_report(matcher)
     assert rep.truncated
+    assert rep.fields == set()
     assert sink.leaked_fields(matcher) == rep.fields
 
 
@@ -429,3 +430,104 @@ async def test_sink_partial_chunked_body_recorded(sink):
     [req] = sink.requests
     assert req.parse_error and MN in req.body_text
     assert "SECRETVALUE" not in req.body_text
+
+
+# ---- fix round 3 -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "42 07700900479",
+        "2024 07700 900479",
+        "1. 07700 900479",
+        "ref 9 (0)7700 900479",
+        "row 1 +44 7700 900479",
+        "+44 (0) 7700 900479",
+        "07700900479",
+        "0044.7700.900.479",
+        "tel:+44-7700-900479",
+    ],
+)
+def test_phone_anchoring_matches(matcher, text):
+    assert matcher.find(text) == {"phone"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ts=17700900479123",
+        "id 9977009004790",
+        "7.700900479",
+        "77.00900479",
+        "id 7700900479099",
+        "4477009004790000",
+        "07700900479123",
+    ],
+)
+def test_phone_anchoring_no_match(matcher, text):
+    assert matcher.find(text) == set()
+
+
+async def _raw_request(sink, data: bytes) -> None:
+    reader, writer = await asyncio.open_connection(
+        "127.0.0.1", int(sink.url.rsplit(":", 1)[1])
+    )
+    writer.write(data)
+    await writer.drain()
+    writer.write_eof()
+    await reader.read(300)
+    writer.close()
+
+
+async def test_obs_fold_secret_redacted_on_parse_error(sink):
+    em = CANARY["email"]
+    await _raw_request(
+        sink,
+        b"POST /p HTTP/1.1\r\nAuthorization: Bearer\r\n   " + em.encode() + b"\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\nZZ\r\n",
+    )
+    [req] = sink.requests
+    assert req.parse_error and req.truncated
+    assert em not in repr(req) and em not in req.body_text
+    assert "email" in req.header_matches
+
+
+async def test_no_colon_secret_dropped_on_parse_error(sink):
+    await _raw_request(
+        sink,
+        b"POST /p HTTP/1.1\r\nAuthorization Bearer " + MN.encode() + b"\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\nZZ\r\n",
+    )
+    [req] = sink.requests
+    assert req.parse_error
+    assert MN not in repr(req) and MN not in req.body_text
+    assert "membership_number" in req.header_matches
+
+
+async def test_oversized_auth_line_marks_truncated(sink):
+    em = CANARY["email"]
+    big = b"Authorization: Bearer " + em.encode() + b" " + b"a" * 70_000 + b"\r\n"
+    await _raw_request(sink, b"GET / HTTP/1.1\r\n" + big + b"\r\n")
+    [req] = sink.requests
+    assert req.parse_error and req.truncated
+    assert em not in repr(req)
+    assert sink.leak_report().truncated
+
+
+async def test_header_scan_truncation_propagates():
+    class Capped(CanaryMatcher):
+        def find_detailed(self, text):
+            from toolgate_eval.sink import MatchResult
+
+            return MatchResult(set(), True)
+
+    s = SinkServer(header_matcher=Capped({"x": "zzz"}))
+    await s.start()
+    try:
+        async with httpx.AsyncClient() as c:
+            await c.get(s.url, headers={"Authorization": "Bearer abc"})
+        assert s.requests[0].truncated is True
+        assert s.leak_report().truncated is True
+    finally:
+        await s.stop()
