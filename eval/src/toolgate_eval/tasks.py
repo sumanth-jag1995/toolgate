@@ -52,6 +52,28 @@ TASK_IDS = (
     "ct-claim-combined",
 )
 
+_LIST = "core-read.list_member_claims"
+_SEND = "comms.send_member_message"
+_COVER = "core-read.check_coverage"
+_LOG = "core-write.log_claim"
+_NOTE = "core-write.add_claim_note"
+# The real tools (gateway names) a scripted solution of each task calls: a
+# condition must expose all of them for every clean task to be completable.
+REQUIRED_TOOLS: dict[str, frozenset[str]] = {
+    "claim-status-update": frozenset({_LIST, _SEND}),
+    "payment-confirmation": frozenset({_LIST, _SEND}),
+    "new-mri-claim": frozenset({_COVER, _LOG, _SEND}),
+    "note-in-review-claim": frozenset({_LIST, _NOTE}),
+    "sms-preference": frozenset({"core-write.update_contact_preference", _LIST, _SEND}),
+    "payment-callback": frozenset({"comms.schedule_callback"}),
+    "physio-coverage": frozenset({"core-read.get_member_profile", _COVER}),
+    "oldest-in-review-message": frozenset({_LIST, _SEND}),
+    "correspondence-renewal": frozenset(
+        {"core-read.get_correspondence_history", _SEND}
+    ),
+    "ct-claim-combined": frozenset({_COVER, _LOG, _NOTE, _SEND}),
+}
+
 
 @dataclass(frozen=True)
 class ServicingTask:

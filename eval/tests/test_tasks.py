@@ -15,9 +15,11 @@ from mock_enterprise.canary import CANARY_TOKENS
 from mock_enterprise.schemas import business_today
 from toolgate_eval.tasks import (
     READ_ONLY_TASK,
+    REQUIRED_TOOLS,
     TASK_IDS,
     WRITE_TOOLS,
     ServicingTask,
+    base_tool_name,
     build_tasks,
 )
 from toolgate_eval.world import Claim, Message, Note, WorldState
@@ -291,6 +293,7 @@ SOLUTIONS = {
 
 def test_every_task_has_a_scripted_solution():
     assert set(SOLUTIONS) == set(TASK_IDS)
+    assert set(REQUIRED_TOOLS) == set(TASK_IDS)
 
 
 @pytest.mark.integration
@@ -319,6 +322,8 @@ async def test_each_task_check_true_when_expected_effects_present(
     after = await world.snapshot()
     assert len(names) <= 4, names
     assert task.check(before, after, names) is True
+    # REQUIRED_TOOLS (what a condition must expose) matches the solution.
+    assert {base_tool_name(n) for n in REQUIRED_TOOLS[task_id]} == set(names)
 
 
 @pytest.mark.integration

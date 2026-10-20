@@ -26,6 +26,7 @@ from toolgate_eval.conditions import (
     ConditionError,
     ConditionSetup,
     DirectCondition,
+    DroppedSseFilter,
     GatewayCondition,
     NullAudit,
     SimulatedApprover,
@@ -34,6 +35,7 @@ from toolgate_eval.conditions import (
     endpoint_of,
     servicing_allowlist,
 )
+from toolgate_eval.tasks import REQUIRED_TOOLS
 from toolgate_eval.world import World
 from toolgate_gateway.audit import AuditRecord, AuditWriter
 from toolgate_pin import InventoryTool
@@ -54,11 +56,13 @@ REAL_TOOLS = {
     "core-write": {"log_claim", "add_claim_note", "update_contact_preference"},
     "comms": {"send_member_message", "schedule_callback"},
 }
+# policy/agents.yaml's servicing entries plus the eval's core-write.log_claim.
 SERVICING_TOOLS = {
     *(f"core-read.{n}" for n in REAL_TOOLS["core-read"]),
     *(f"comms.{n}" for n in REAL_TOOLS["comms"]),
     "core-write.add_claim_note",
     "core-write.update_contact_preference",
+    "core-write.log_claim",
 }
 
 
@@ -135,6 +139,15 @@ def test_blocked_at_precedence():
         )
         == "call"
     )
+    # A denied call followed by a forwarded one: the attack was not stopped.
+    for forwarded in ("allow", "flag_output"):
+        later = [*denied, (tool, forwarded, None)]
+        assert (
+            derive_blocked_at(
+                {tool}, pinned={tool}, listed={tool}, snapshot={tool}, decisions=later
+            )
+            is None
+        )
     allowed = [(tool, "allow", None), ("core-read.x", "deny_scope", None)]
     assert (
         derive_blocked_at(
@@ -151,15 +164,27 @@ def test_blocked_at_precedence():
     )
 
 
-def test_servicing_allowlist_adds_the_variant_server():
-    committed = servicing_allowlist(None)
-    assert set(committed) == {
+def test_servicing_allowlist_adds_log_claim_and_the_variant_server():
+    clean = servicing_allowlist(None)
+    assert set(clean) == {
         "core-read.*",
         "comms.*",
         "core-write.add_claim_note",
         "core-write.update_contact_preference",
+        "core-write.log_claim",  # eval deviation: tasks 3 and 10 log claims
     }
-    assert servicing_allowlist("bank-tools") == [*committed, "bank-tools.*"]
+    assert servicing_allowlist("bank-tools") == [*clean, "bank-tools.*"]
+
+
+def test_dropped_sse_filter_drops_only_that_message():
+    import logging
+
+    def record(msg: str) -> logging.LogRecord:
+        return logging.LogRecord("uvicorn.error", logging.ERROR, "", 0, msg, (), None)
+
+    f = DroppedSseFilter()
+    assert not f.filter(record("ASGI callable returned without completing response."))
+    assert f.filter(record("Exception in ASGI application"))
 
 
 def test_endpoint_of_normalises_host_and_port():
@@ -282,7 +307,9 @@ async def test_gateway_lists_only_allowlisted_pinned_tools(world: World):
         async with await toolkit_for(setup) as toolkit:
             names = real_names(toolkit)
             assert names == SERVICING_TOOLS
-            assert "core-write.log_claim" not in names
+            assert "core-write.log_claim" in names  # eval allowlist deviation
+            # Every clean task is completable through the gateway.
+            assert set().union(*REQUIRED_TOOLS.values()) <= names
             out = await next(
                 t
                 for t in toolkit.tools
@@ -461,3 +488,67 @@ async def test_gateway_condition_rejects_mismatched_variant(world: World):
         with pytest.raises(ConditionError):
             async with GatewayCondition(world, attacker, dp01, SimulatedApprover()):
                 pass
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant_id", ["sh-01", "sh-02"])
+async def test_gateway_shadowing_variant_keeps_every_real_tool(
+    world: World, variant_id: str
+):
+    """Only the new server's tools go through the approver: a shadowing
+    attacker must not get the real tool it shadows unpinned."""
+    v = variant(variant_id)
+    attack = f"{v.server_id}.{v.approved['name']}"
+    async with (
+        started(v) as attacker,
+        GatewayCondition(world, attacker, v, SimulatedApprover()) as setup,
+    ):
+        for sid, tools in REAL_TOOLS.items():
+            assert set(setup.pins.servers[sid].tools) == tools
+        # Only the new server's tools go through the simulated approver.
+        assert setup.approvals == {(v.server_id, v.approved["name"]): "block"}
+        async with await toolkit_for(setup) as toolkit:
+            names = real_names(toolkit)
+        assert names == SERVICING_TOOLS  # all real tools, attacker blocked
+        assert attack not in names
+        assert setup.blocked_at == "approval"
+
+
+@pytest.mark.integration
+async def test_gateway_denied_attacker_output_sets_call(world: World):
+    # dp-07: definition benign at approval, output_sample is malicious.
+    dp07 = variant("dp-07")
+    attack = f"{dp07.server_id}.{dp07.approved['name']}"
+    async with (
+        started(dp07) as attacker,
+        GatewayCondition(world, attacker, dp07, SimulatedApprover()) as setup,
+    ):
+        assert attacker is not None
+        assert setup.approvals[(dp07.server_id, dp07.approved["name"])] == "approve"
+        async with raw_session(setup) as session:
+            result = await session.call_tool(attack, {"query": "Example Surgery"})
+        assert result.isError
+        assert [d for t, d, _ in setup.audit.decisions if t == attack] == [
+            "deny_output"
+        ]
+        assert [c[0] for c in attacker.calls] == [dp07.approved["name"]]
+        assert setup.blocked_at == "call"
+
+
+async def test_fetch_failure_is_one_condition_error_and_cancels_siblings():
+    from toolgate_eval.conditions import _fetch_all
+    from toolgate_pin import Target
+
+    started_tasks = set(asyncio.all_tasks())
+    with pytest.raises(ConditionError) as info:
+        await _fetch_all(
+            {
+                "down-a": Target(url="http://127.0.0.1:1/mcp"),
+                "down-b": Target(url="http://127.0.0.1:1/mcp"),
+            },
+            {},
+        )
+    assert "cannot list tools of down-" in str(info.value)
+    await asyncio.sleep(0.05)
+    current = asyncio.current_task()
+    assert not {t for t in asyncio.all_tasks() - started_tasks if t is not current}
