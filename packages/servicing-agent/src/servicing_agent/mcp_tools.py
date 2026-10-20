@@ -15,7 +15,7 @@ import asyncio
 import json
 import re
 import warnings
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import timedelta
@@ -209,11 +209,27 @@ class McpToolkit:
 
 
 async def _resolve_tokens(
-    urls: Sequence[str], token_provider: TokenProvider | None
+    urls: Sequence[str],
+    token_provider: TokenProvider | None,
+    token_providers: Mapping[str, TokenProvider | None] | None = None,
 ) -> dict[str, str | None]:
-    """The bearer token for each URL, fetched once per connect."""
-    token = await token_provider() if token_provider is not None else None
-    return dict.fromkeys(urls, token)
+    """The bearer token for each URL. A URL in ``token_providers`` uses that
+    provider (``None``: no token); any other URL uses ``token_provider``.
+    Each distinct provider is called once per connect."""
+    chosen: dict[str, TokenProvider | None] = {
+        url: (
+            token_providers[url]
+            if token_providers is not None and url in token_providers
+            else token_provider
+        )
+        for url in urls
+    }
+    distinct = {id(p): p for p in chosen.values() if p is not None}
+    fetched = {key: await provider() for key, provider in distinct.items()}
+    return {
+        url: (fetched[id(provider)] if provider is not None else None)
+        for url, provider in chosen.items()
+    }
 
 
 def _auth_headers(token: str | None) -> dict[str, str]:
@@ -292,16 +308,23 @@ async def _open(
 
 
 async def connect(
-    mcp_urls: Sequence[str] | str, token_provider: TokenProvider | None
+    mcp_urls: Sequence[str] | str,
+    token_provider: TokenProvider | None,
+    *,
+    token_providers: Mapping[str, TokenProvider | None] | None = None,
 ) -> McpToolkit:
     """Open one streamable-HTTP session per URL and expose their tools.
+
+    ``token_providers`` maps a URL to its own provider (``None`` for a URL
+    that gets no bearer token) and takes precedence over ``token_provider``,
+    which applies to every URL not in the mapping.
 
     When two servers list the same tool name the first is kept and the clash
     is recorded in ``toolkit.collisions``. A server that cannot be reached
     raises ``ConnectionError`` naming the URL (never headers or tokens).
     """
     urls = [mcp_urls] if isinstance(mcp_urls, str) else list(mcp_urls)
-    tokens = await _resolve_tokens(urls, token_provider)
+    tokens = await _resolve_tokens(urls, token_provider, token_providers)
     toolkit = McpToolkit()
     ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 

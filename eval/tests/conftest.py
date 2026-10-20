@@ -2,7 +2,7 @@
 
 Integration tests (marked ``integration``) use the ``world`` and ``open_mcp``
 fixtures, which skip cleanly when the repo-root ``.env``, Keycloak, the mock
-API or Postgres is unavailable.
+API or Postgres is unavailable. ``world`` reseeds on teardown.
 """
 
 import socket
@@ -116,8 +116,13 @@ def stack_settings() -> WorldSettings:
 
 @pytest.fixture
 async def world(stack_settings: WorldSettings) -> AsyncIterator[World]:
+    """A World on the live stack, reseeded on teardown so every test leaves
+    the stack at seed state."""
     async with World(stack_settings) as w:
-        yield w
+        try:
+            yield w
+        finally:
+            await w.reseed()
 
 
 @pytest.fixture

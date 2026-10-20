@@ -46,7 +46,18 @@ _CLAIM_IN_SUBJECT = re.compile(r"\bC-\d{6}\b")
 
 
 class WorldError(Exception):
-    """A world operation failed. Messages name clients, paths or variables only."""
+    """A world operation failed. Messages name clients, paths, variables or
+    SQLSTATE codes only."""
+
+
+def _sqlstate(exc: BaseException) -> str:
+    """``", SQLSTATE xxxxx"`` when the driver error carries one, else ``""``.
+    A SQLSTATE is a five-character class code, never data."""
+    for err in (getattr(exc, "orig", None), exc):
+        code = getattr(err, "sqlstate", None) or getattr(err, "pgcode", None)
+        if isinstance(code, str) and re.fullmatch(r"[0-9A-Z]{5}", code):
+            return f", SQLSTATE {code}"
+    return ""
 
 
 @dataclass(frozen=True)
@@ -60,6 +71,11 @@ class WorldSettings:
     member_id: str = CANARY["member_id"]
     seed_members: int = 50
     rng_seed: int = 1234
+    # Reseed waits at most this long for a table lock (a stuck transaction
+    # elsewhere fails the reseed instead of hanging the run) and for any
+    # single statement.
+    reseed_lock_timeout_s: float = 5.0
+    reseed_statement_timeout_s: float = 60.0
 
     @classmethod
     def from_env(cls, env_file: Path = DEFAULT_ENV, **overrides: Any) -> Self:
@@ -239,6 +255,11 @@ class World:
         try:
             await create_schema(engine)  # no-op on the running stack
             async with make_sessionmaker(engine)() as session:
+                # SET LOCAL: both limits end with seed()'s single commit.
+                lock_ms = max(int(self.settings.reseed_lock_timeout_s * 1000), 1)
+                stmt_ms = max(int(self.settings.reseed_statement_timeout_s * 1000), 1)
+                await session.execute(text(f"SET LOCAL lock_timeout = {lock_ms}"))
+                await session.execute(text(f"SET LOCAL statement_timeout = {stmt_ms}"))
                 await session.execute(text("ALTER SEQUENCE claim_id_seq RESTART"))
                 await seed(
                     session,
@@ -246,7 +267,9 @@ class World:
                     rng_seed=self.settings.rng_seed,
                 )  # commits, together with the sequence restart
         except (SQLAlchemyError, OSError) as exc:
-            raise WorldError(f"reseed failed ({type(exc).__name__})") from None
+            raise WorldError(
+                f"reseed failed ({type(exc).__name__}{_sqlstate(exc)})"
+            ) from None
 
     async def token(self, client_id: str) -> str:
         """A client-credentials access token, cached until shortly before expiry."""
@@ -275,14 +298,26 @@ class World:
                 raise WorldError(
                     f"{client_id} token request failed: HTTP {resp.status_code}"
                 )
-            body = resp.json()
-            access = body["access_token"]
-            ttl = float(body.get("expires_in", 60))
+            access, ttl = self._parse_token(client_id, resp)
             self._tokens[client_id] = (
                 access,
                 time.monotonic() + max(ttl - _TOKEN_MARGIN_S, 0.0),
             )
             return access
+
+    @staticmethod
+    def _parse_token(client_id: str, resp: httpx.Response) -> tuple[str, float]:
+        """``(access token, ttl)`` from a token response; anything malformed is
+        a WorldError naming the client only (never the body)."""
+        try:
+            body = resp.json()
+            access = body["access_token"]
+            ttl = float(body.get("expires_in", 60))
+            if not isinstance(access, str) or not access or not ttl > 0:
+                raise ValueError
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise WorldError(f"{client_id} token response malformed") from None
+        return access, ttl
 
     async def _get(self, token: str, path: str, **params: Any) -> Any:
         try:

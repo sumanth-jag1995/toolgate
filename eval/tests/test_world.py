@@ -205,3 +205,58 @@ async def test_token_failure_names_the_client_only(stack_settings: WorldSettings
             await world.token("servicing")
     assert "servicing" in str(info.value)
     assert "wrong-secret-xyz" not in str(info.value)
+
+
+# --- token responses and reseed timeouts ---------------------------------------
+
+_SECRETISH = "body-secret-should-not-appear"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"not json " + _SECRETISH.encode(),
+        b'{"token_type": "' + _SECRETISH.encode() + b'"}',
+        b'["' + _SECRETISH.encode() + b'"]',
+        b'{"access_token": ""}',
+        b'{"access_token": "abc", "expires_in": "soon"}',
+    ],
+    ids=["not-json", "no-access-token", "not-an-object", "empty-token", "bad-ttl"],
+)
+async def test_malformed_token_response_is_a_world_error(body: bytes):
+    settings = WorldSettings(client_secrets={"servicing": "s"})
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    async with World(settings) as world:
+        await world._http.aclose()
+        world._http = httpx.AsyncClient(transport=transport)
+        with pytest.raises(WorldError) as info:
+            await world.token("servicing")
+    message = str(info.value)
+    assert "servicing" in message and "malformed" in message
+    assert _SECRETISH not in message
+    assert info.value.__cause__ is None and info.value.__suppress_context__
+
+
+@pytest.mark.integration
+async def test_reseed_times_out_on_a_held_lock_with_sqlstate(
+    stack_settings: WorldSettings,
+):
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    settings = replace(stack_settings, reseed_lock_timeout_s=0.5)
+    blocker = create_async_engine(stack_settings.admin_dsn)
+    try:
+        async with blocker.connect() as conn, World(settings) as world:
+            await conn.execute(text("SELECT 1 FROM members LIMIT 1"))  # ACCESS SHARE
+            started = time.perf_counter()
+            with pytest.raises(WorldError) as info:
+                await world.reseed()
+            elapsed = time.perf_counter() - started
+            await conn.rollback()
+    finally:
+        await blocker.dispose()
+    assert "55P03" in str(info.value)  # lock_not_available
+    assert elapsed < 5.0
+    async with World(stack_settings) as world:
+        await world.reseed()  # the stack is usable again

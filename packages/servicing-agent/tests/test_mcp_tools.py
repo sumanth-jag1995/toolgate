@@ -225,3 +225,47 @@ async def test_close_after_keeper_cancelled_does_not_raise(serve, make_server):
     await asyncio.wait({keeper})
     await toolkit.close()  # must not raise CancelledError into this task
     await toolkit.close()  # idempotent
+
+
+async def test_per_url_token_providers_take_precedence(serve, make_server):
+    url_a, seen_a = await serve(make_server("a"))
+    url_b, seen_b = await serve(FastMCP("b"))
+    url_c, seen_c = await serve(FastMCP("c"))
+    fetched: list[str] = []
+
+    def provider(token: str):
+        async def get() -> str:
+            fetched.append(token)
+            return token
+
+        return get
+
+    async with await connect(
+        [url_a, url_b, url_c],
+        provider("fallback"),
+        token_providers={url_a: provider("tok-a"), url_b: None},
+    ) as toolkit:
+        await by_name(toolkit)["big"].ainvoke({})
+    assert seen_a and all(a == "Bearer tok-a" for a in seen_a)
+    assert seen_b and all(a is None for a in seen_b)  # explicit None: no header
+    assert seen_c and all(a == "Bearer fallback" for a in seen_c)
+    assert sorted(fetched) == ["fallback", "tok-a"]  # each provider once
+
+
+async def test_shared_provider_in_mapping_fetched_once(serve, make_server):
+    url_a, seen_a = await serve(make_server("a"))
+    url_b, seen_b = await serve(FastMCP("b"))
+    calls = 0
+
+    async def provider() -> str:
+        nonlocal calls
+        calls += 1
+        return "tok-shared"
+
+    async with await connect(
+        [url_a, url_b], None, token_providers={url_a: provider, url_b: provider}
+    ):
+        pass
+    assert calls == 1
+    assert seen_a and all(a == "Bearer tok-shared" for a in seen_a)
+    assert seen_b and all(a == "Bearer tok-shared" for a in seen_b)
