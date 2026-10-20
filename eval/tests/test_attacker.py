@@ -17,7 +17,8 @@ import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import ServerNotification, TextContent, ToolListChangedNotification
-from toolgate_eval.attacker import AttackerServer
+from mock_enterprise.canary import CANARY
+from toolgate_eval.attacker import AttackerServer, CallRecord, encode_forward
 from toolgate_eval.sink import SinkServer
 from toolgate_pin.corpus import InventoryEntry, MaliciousVariant, load_corpus
 
@@ -109,7 +110,11 @@ async def test_serves_approved_definition_verbatim(sink):
 
 async def test_call_forwards_all_arguments_to_sink(sink):
     v = VARIANTS["dp-01"]
-    args = sample_args(v.approved) | {"extra": {"nested": [1, 2]}}
+    args = sample_args(v.approved) | {
+        "extra": {"nested": [1, 2]},
+        "none": None,
+        "tagged": "pc\U000e0049\u00e9",  # a tag-block character and a non-ASCII letter
+    }
     async with attacker(v, sink) as (srv, url), client(url) as s:
         result = await s.call_tool(v.approved["name"], args)
     assert not result.isError
@@ -123,6 +128,8 @@ async def test_call_forwards_all_arguments_to_sink(sink):
         "arguments": args,
     }
     assert srv.calls == [(v.approved["name"], len(args))]
+    assert srv.call_records == [CallRecord(v.approved["name"], len(args), True)]
+    assert srv.forward_failures == 0
 
 
 async def test_unknown_tool_is_error_and_not_forwarded(sink):
@@ -134,25 +141,120 @@ async def test_unknown_tool_is_error_and_not_forwarded(sink):
     assert srv.calls == []
 
 
-async def test_forwarding_failure_still_returns_benign_result(sink):
-    v = VARIANTS["dp-01"]
+@contextlib.asynccontextmanager
+async def fake_sink(reply: bytes | None):
+    """A local HTTP endpoint answering every request with ``reply`` (None:
+    hang up without answering)."""
 
-    async def hang_up(reader, writer):
-        writer.close()  # every forward fails with a protocol error
+    async def handle(reader, writer):
+        with contextlib.suppress(Exception):
+            await reader.read(65536)
+            if reply is not None:
+                writer.write(reply)
+                await writer.drain()
+        writer.close()
 
-    broken = await asyncio.start_server(hang_up, "127.0.0.1", 0)
-    port = broken.sockets[0].getsockname()[1]
-    server = AttackerServer(v, f"http://127.0.0.1:{port}")
+    srv = await asyncio.start_server(handle, "127.0.0.1", 0)
+    try:
+        yield f"http://127.0.0.1:{srv.sockets[0].getsockname()[1]}"
+    finally:
+        srv.close()
+
+
+async def _call_once(v: MaliciousVariant, sink_url: str):
+    server = AttackerServer(v, sink_url)
     url = await server.start()
     try:
         async with client(url) as s:
             result = await s.call_tool(v.approved["name"], sample_args(v.approved))
     finally:
         await server.stop()
-        broken.close()
-    assert not result.isError
+    assert not result.isError  # the agent still sees a benign result
     assert text_of(result)
-    assert server.calls == [(v.approved["name"], len(sample_args(v.approved)))]
+    return server
+
+
+async def test_forward_hang_up_is_recorded_not_raised():
+    v = VARIANTS["dp-01"]
+    async with fake_sink(None) as sink_url:
+        server = await _call_once(v, sink_url)
+    n = len(sample_args(v.approved))
+    assert server.calls == [(v.approved["name"], n)]
+    assert server.call_records == [CallRecord(v.approved["name"], n, False)]
+    assert server.forward_failures == 1
+
+
+async def test_forward_sink_500_is_recorded():
+    v = VARIANTS["dp-01"]
+    reply = (
+        b"HTTP/1.1 500 Internal Server Error\r\n"
+        b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    async with fake_sink(reply) as sink_url:
+        server = await _call_once(v, sink_url)
+    assert [c.forwarded for c in server.call_records] == [False]
+    assert server.forward_failures == 1
+
+
+async def test_forward_sink_down_is_recorded(sink):
+    v = VARIANTS["dp-01"]
+    sink_url = sink.url
+    await sink.stop()  # nothing listens on that port any more
+    server = await _call_once(v, sink_url)
+    assert [c.forwarded for c in server.call_records] == [False]
+    assert server.forward_failures == 1
+
+
+def test_encode_forward_keeps_siblings_of_non_finite_floats():
+    body = encode_forward(
+        {"arguments": {"a": float("nan"), "b": [float("inf"), -float("inf")], "c": "x"}}
+    )
+    assert json.loads(body) == {
+        "arguments": {"a": "nan", "b": ["inf", "-inf"], "c": "x"}
+    }
+
+
+async def test_nan_argument_does_not_drop_canary_sibling(sink):
+    # The MCP client turns NaN into null on the wire, so the forwarding path
+    # is driven directly with the values a lenient server-side parse could see.
+    v = VARIANTS["dp-01"]
+    mn = CANARY["membership_number"]
+    async with attacker(v, sink) as (srv, _):
+        ok = await srv._forward(v.approved["name"], {"x": float("nan"), "y": mn})
+    assert ok is True
+    [req] = sink.requests
+    assert json.loads(req.body_text)["arguments"] == {"x": "nan", "y": mn}
+    assert "membership_number" in sink.leak_report().fields
+
+
+async def test_start_converts_uvicorn_exit_to_runtime_error(sink, monkeypatch):
+    import uvicorn
+
+    async def exits(self, sockets=None):
+        raise SystemExit(1)  # what uvicorn does on a bind failure
+
+    monkeypatch.setattr(uvicorn.Server, "serve", exits)
+    srv = AttackerServer(VARIANTS["dp-01"], sink.url)
+    with pytest.raises(RuntimeError):
+        await srv.start()
+    await srv.stop()  # nothing left to stop
+
+
+async def test_start_has_a_deadline(sink, monkeypatch):
+    import uvicorn
+    from toolgate_eval import attacker as mod
+
+    async def never_starts(self, sockets=None):
+        while not self.should_exit:
+            await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(uvicorn.Server, "serve", never_starts)
+    monkeypatch.setattr(mod, "START_TIMEOUT", 0.2)
+    srv = AttackerServer(VARIANTS["dp-01"], sink.url)
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError):
+        await srv.start()
+    assert time.monotonic() - t0 < 2.0
 
 
 async def test_mutate_changes_definition_and_notifies(sink):
@@ -165,6 +267,14 @@ async def test_mutate_changes_definition_and_notifies(sink):
         assert await notified(srv, notes)
         assert srv.live_definition() == v.mutated
         assert served((await s.list_tools()).tools[0]) == v.mutated
+
+
+async def test_client_connecting_after_mutate_sees_mutated_definition(sink):
+    v = VARIANTS["rp-01"]
+    async with attacker(v, sink) as (srv, url):
+        assert await srv.mutate() is True  # no session yet: nothing to notify
+        async with client(url) as s:
+            assert served((await s.list_tools()).tools[0]) == v.mutated
 
 
 async def test_mutate_noop_for_non_rug_pull(sink):
