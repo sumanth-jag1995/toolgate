@@ -21,11 +21,22 @@ output or tool arguments. Each line of the results file is one JSON object:
 an episode record, or an ``{"event": ...}`` line (``run_start``,
 ``quota_exhausted``).
 
-Resume: an episode is skipped when its key is already in the results file
-with the same corpus and models.yaml hashes; error records are retried unless
-``keep_errors``. Rate limits: a model error labelled ``(HTTP 429)`` re-runs
-the whole episode with exponential backoff (5 s, 10 s, 20 s, 40 s); a 429 on
-every one of :data:`MAX_ATTEMPTS` attempts is read as the daily quota being
+Resume: an episode is skipped when its key ``(variant, task, condition,
+model, repeat)`` is already in the results file with the same corpus hash and
+the same per-model config hash (:func:`model_config_hash`: that model's
+provider, model id, temperature, base_url and max_tokens, so editing one
+model's entry in models.yaml re-runs only that model); error records are
+retried unless ``keep_errors``. Records carry both the yaml name (``model``)
+and the provider's model id (``model_id``). JSONL is written ASCII-only
+(``ensure_ascii=True``).
+
+Lock: a run holds ``<results>.lock`` (created with O_CREAT|O_EXCL) for its
+whole duration and removes it on exit, exceptions included; a second run on
+the same results file refuses to start (:class:`RunnerError`). A crashed
+process can leave a stale lock: delete it by hand when no run is active.
+
+Rate limits: a model error labelled ``(HTTP 429)`` re-runs the whole episode
+with exponential backoff (5 s, 10 s, 20 s, 40 s); a 429 on every one of :data:`MAX_ATTEMPTS` attempts is read as the daily quota being
 exhausted (the agent's error label carries only the exception type and
 status, so neither a ``retry-after`` header nor a "daily limit" message is
 visible here): a ``quota_exhausted`` event is appended and the run stops
@@ -54,6 +65,7 @@ from typing import Any, Literal, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from servicing_agent.agent import EpisodeTrace, ServicingAgent
+from servicing_agent.config import ModelConfig
 from servicing_agent.mcp_tools import connect as mcp_connect
 from toolgate_pin.corpus import Corpus, MaliciousVariant
 
@@ -195,6 +207,20 @@ def corpus_hash(corpus: Corpus) -> str:
     return hashlib.sha256(_stable_json(rows).encode("utf-8")).hexdigest()
 
 
+def model_config_hash(cfg: ModelConfig) -> str:
+    """sha256 over ONE model's settings that change its behaviour (provider,
+    model id, temperature, base_url, max_tokens). The API key's env var name
+    is not part of it."""
+    settings = {
+        "provider": cfg.provider,
+        "model": cfg.model,
+        "temperature": cfg.temperature,
+        "base_url": cfg.base_url,
+        "max_tokens": cfg.max_tokens,
+    }
+    return hashlib.sha256(_stable_json(settings).encode("utf-8")).hexdigest()
+
+
 def file_hash(path: str | Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -223,12 +249,14 @@ class EpisodeRecord:
     commit_sha: str
     corpus_hash: str
     models_yaml_hash: str
+    model_config_hash: str
     variant_id: str | None
     family: str | None
     leak_capable: bool
     task_id: str
     condition: Condition
     model: str
+    model_id: str | None
     repeat: int
     seed: int
     leaked: bool | None
@@ -292,6 +320,10 @@ class RunContext:
     world: Any  # toolgate_eval.world.World (reseed, snapshot, token)
     chat_model: Callable[[str], BaseChatModel]
     seed: int
+    # yaml name -> provider model id / per-model config hash. A model missing
+    # from model_config_hashes falls back to the whole models.yaml hash.
+    model_ids: Mapping[str, str] = field(default_factory=dict)
+    model_config_hashes: Mapping[str, str] = field(default_factory=dict)
     approver: Approver = field(default_factory=SimulatedApprover)
     make_sink: Callable[[], Any] | None = None
     make_attacker: Callable[[MaliciousVariant, str], Any] | None = None
@@ -306,6 +338,9 @@ class RunContext:
         self.make_condition = self.make_condition or default_condition
         self.connect = self.connect or mcp_connect
         self.make_agent = self.make_agent or default_agent
+
+    def config_hash(self, model: str) -> str:
+        return self.model_config_hashes.get(model, self.models_yaml_hash)
 
 
 # --- one episode ---------------------------------------------------------------------------
@@ -397,12 +432,14 @@ async def run_episode(spec: EpisodeSpec, ctx: RunContext) -> EpisodeRecord:
         commit_sha=ctx.commit_sha,
         corpus_hash=ctx.corpus_hash,
         models_yaml_hash=ctx.models_yaml_hash,
+        model_config_hash=ctx.config_hash(spec.model),
         variant_id=spec.variant_id,
         family=variant.family if variant is not None else None,
         leak_capable=variant is not None and variant.id not in NOT_LEAK_CAPABLE,
         task_id=spec.task_id,
         condition=spec.condition,
         model=spec.model,
+        model_id=ctx.model_ids.get(spec.model),
         repeat=spec.repeat,
         seed=ctx.seed,
         leaked=None if error is not None else bool(found),
@@ -447,7 +484,7 @@ def _append(path: Path, obj: Mapping[str, Any]) -> None:
             if f.read(1) != b"\n":
                 prefix = "\n"  # never glue a record onto a torn line
     with path.open("a", encoding="utf-8", newline="\n") as f:
-        f.write(prefix + json.dumps(obj, ensure_ascii=False) + "\n")
+        f.write(prefix + json.dumps(obj, ensure_ascii=True) + "\n")
         f.flush()
 
 
@@ -459,6 +496,28 @@ def _key_of(rec: Mapping[str, Any]) -> tuple[Any, ...]:
         rec.get("model"),
         rec.get("repeat"),
     )
+
+
+def _resume_key(rec: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (*_key_of(rec), rec.get("model_config_hash"))
+
+
+def lock_path(results_path: Path) -> Path:
+    return results_path.with_name(results_path.name + ".lock")
+
+
+def _acquire_lock(results_path: Path) -> Path:
+    lock = lock_path(results_path)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise RunnerError(
+            f"{lock.name} exists: another run is writing this results file, or a "
+            f"crashed run left a stale lock (delete {lock.name} if no run is active)"
+        ) from None
+    os.close(fd)
+    return lock
 
 
 def _now() -> str:
@@ -504,22 +563,37 @@ async def run_matrix(
     max_episodes: int | None = None,
     keep_errors: bool = False,
 ) -> RunSummary:
-    """Run ``specs`` in order, appending one JSON line per episode."""
+    """Run ``specs`` in order, appending one JSON line per episode, holding
+    the results-file lock throughout."""
     path = Path(results_path)
+    lock = _acquire_lock(path)
+    try:
+        return await _run_locked(specs, path, ctx, max_episodes, keep_errors)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+async def _run_locked(
+    specs: Iterable[EpisodeSpec],
+    path: Path,
+    ctx: RunContext,
+    max_episodes: int | None,
+    keep_errors: bool,
+) -> RunSummary:
     existing = read_results(path)
     done = {
-        _key_of(r)
+        _resume_key(r)
         for r in existing
         if "event" not in r
         and r.get("corpus_hash") == ctx.corpus_hash
-        and r.get("models_yaml_hash") == ctx.models_yaml_hash
         and (keep_errors or r.get("error") is None)
     }
     summary = RunSummary()
     fairness_checked = False
     stamped = False
     for spec in specs:
-        if spec.key in done:
+        key = (*spec.key, ctx.config_hash(spec.model))
+        if key in done:
             summary.skipped += 1
             continue
         if max_episodes is not None and summary.ran >= max_episodes:
@@ -547,7 +621,7 @@ async def run_matrix(
         assert rec is not None
         _append(path, rec.to_dict())
         if rec.error is None or keep_errors:
-            done.add(spec.key)
+            done.add(key)
         summary.ran += 1
         summary.errors += rec.error is not None
         summary.leaked += rec.leaked is True
@@ -562,6 +636,8 @@ def _run_start(ctx: RunContext) -> dict[str, Any]:
         "commit_sha": ctx.commit_sha,
         "corpus_hash": ctx.corpus_hash,
         "models_yaml_hash": ctx.models_yaml_hash,
+        "model_ids": dict(ctx.model_ids),
+        "model_config_hashes": dict(ctx.model_config_hashes),
         "seed": ctx.seed,
         "max_steps": MAX_STEPS,
         "approver_tiers": list(getattr(ctx.approver, "tiers", ())),
@@ -626,6 +702,10 @@ async def run_cli(opts: RunOptions) -> RunSummary:
             world=world,
             chat_model=lambda name: make_chat_model(models[name]),
             seed=settings.rng_seed,
+            model_ids={name: cfg.model for name, cfg in models.items()},
+            model_config_hashes={
+                name: model_config_hash(cfg) for name, cfg in models.items()
+            },
         )
         return await run_matrix(
             specs,

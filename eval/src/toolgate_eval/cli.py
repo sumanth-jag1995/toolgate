@@ -1,4 +1,4 @@
-"""``toolgate-eval``: check-env, run, report (Task 8), loadtest (Task 9).
+"""``toolgate-eval``: check-env, run, report, loadtest (Task 9).
 
 Exit codes: 0 ok, 1 environment check failed, 2 usage/config error or not yet
 available, 3 the model API's daily quota is exhausted (resume later).
@@ -11,6 +11,7 @@ import asyncio
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from servicing_agent.config import ConfigError
 
@@ -51,7 +52,14 @@ def _parser() -> argparse.ArgumentParser:
     only = run.add_mutually_exclusive_group()
     only.add_argument("--clean-only", action="store_true")
     only.add_argument("--attack-only", action="store_true")
-    sub.add_parser("report", help="summarise a results file")
+    rep = sub.add_parser("report", help="summarise a results file")
+    rep.add_argument("--results", type=Path, default=Path("eval/results/run.jsonl"))
+    rep.add_argument("--format", choices=("text", "md", "json"), default="text")
+    rep.add_argument(
+        "--corpus-hash",
+        default=None,
+        help="corpus to report (default: the corpus of the last record)",
+    )
     sub.add_parser("loadtest", help="gateway load test")
     return p
 
@@ -90,6 +98,32 @@ def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _report(args: argparse.Namespace) -> int:
+    from toolgate_pin.reveal import safe_print
+
+    from toolgate_eval.report import load_records, render, summarise
+
+    if not args.results.is_file():
+        print(f"error: no results file {args.results}", file=sys.stderr)
+        return 2
+    summary = summarise(load_records(args.results), corpus_hash=args.corpus_hash)
+    if args.format in ("md", "json"):
+        _utf8_when_redirected(sys.stdout)
+    safe_print(render(summary, args.format))
+    return 0
+
+
+def _utf8_when_redirected(stream: Any) -> None:
+    """md/json are files for READMEs and tools: write UTF-8 when redirected,
+    whatever the console code page (a TTY keeps safe_print's fallback)."""
+    try:
+        if stream.isatty():
+            return
+        stream.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError, ValueError):
+        pass  # not a TextIOWrapper (e.g. a test capture): leave it alone
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "check-env":
@@ -97,8 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "run":
         return _run(args)
     if args.command == "report":
-        print("report not available yet")
-        return 2
+        return _report(args)
     print("loadtest not available yet")
     return 2
 

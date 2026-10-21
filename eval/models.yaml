@@ -1,13 +1,19 @@
 # Models for the evaluation matrix (servicing_agent.config.load_models format).
-# PLACEHOLDER ids: Task 8 replaces them with exact OpenRouter `:free` model ids
-# that support tool calling (one stronger, one smaller).
+# Chosen 2026-10-21 from OpenRouter's public model list
+# (https://openrouter.ai/api/v1/models): `:free` ids whose supported_parameters
+# include `tools` (and `tool_choice`). Free-tier models: results are specific to
+# these ids and to the free tier's routing and limits. Live tool-calling
+# validation (the 6-episode direct smoke in eval/README.md) is PENDING: no
+# OPENROUTER_API_KEY was available when these were picked.
 strong:
+  # Stronger: NVIDIA Nemotron 3 Ultra, 550B-total / 55B-active MoE, tools + tool_choice.
   provider: openrouter
-  model: PLACEHOLDER-strong-model-id
+  model: nvidia/nemotron-3-ultra-550b-a55b:free
   temperature: 0
   api_key_env: OPENROUTER_API_KEY
 small:
+  # Smaller: Google Gemma 4 31B instruct (dense 31B), native function calling, tools + tool_choice.
   provider: openrouter
-  model: PLACEHOLDER-small-model-id
+  model: google/gemma-4-31b-it:free
   temperature: 0
   api_key_env: OPENROUTER_API_KEY

@@ -267,6 +267,9 @@ class Harness:
         world_fail: str | None = None,
         agent_raises: BaseException | None = None,
         corpus_hash: str = "c" * 64,
+        models_yaml_hash: str = "m" * 64,
+        model_ids: dict[str, str] | None = None,
+        model_hashes: dict[str, str] | None = None,
     ) -> None:
         self.log = Log()
         self.world = FakeWorld(self.log, world_fail)
@@ -289,7 +292,9 @@ class Harness:
             run_id="run-1",
             commit_sha="deadbeef",
             corpus_hash=corpus_hash,
-            models_yaml_hash="m" * 64,
+            models_yaml_hash=models_yaml_hash,
+            model_ids=model_ids or {},
+            model_config_hashes=model_hashes or {},
             variants=VARIANTS,
             tasks=TASKS,
             world=self.world,
@@ -746,9 +751,9 @@ async def test_gateway_requires_direct_results(tmp_path: Path):
 # --- CLI ---------------------------------------------------------------------------
 
 
-def test_cli_stubs_and_check_env_prints_names_only(monkeypatch, capsys):
-    assert cli.main(["report"]) == 2
-    assert "report not available yet" in capsys.readouterr().out
+def test_cli_stubs_and_check_env_prints_names_only(monkeypatch, capsys, tmp_path):
+    assert cli.main(["report", "--results", str(tmp_path / "none.jsonl")]) == 2
+    assert "no results file" in capsys.readouterr().err
     assert cli.main(["loadtest"]) == 2
     capsys.readouterr()
 
@@ -921,3 +926,119 @@ async def test_scripted_poisoned_model_leaks_in_direct_and_not_in_gateway(
         and t.get_coro().__qualname__ != "_shutdown_watcher"  # type: ignore[union-attr]
     }
     assert not leftover, sorted(t.get_name() for t in leftover)
+
+
+# --- Task 8 runner changes: model_id, ASCII JSONL, lock, per-model hash ------------
+
+
+async def test_record_carries_model_id_and_model_config_hash(tmp_path: Path):
+    h = Harness(
+        model_ids={"strong": "vendor/strong-model:free"},
+        model_hashes={"strong": "a" * 64},
+    )
+    results = tmp_path / "run.jsonl"
+    await run_matrix([spec("dp-01")], results_path=results, ctx=h.ctx)
+    (rec,) = episodes(results)
+    assert rec["model"] == "strong"
+    assert rec["model_id"] == "vendor/strong-model:free"
+    assert rec["model_config_hash"] == "a" * 64
+
+
+def test_model_config_hash_covers_only_that_models_settings():
+    from servicing_agent.config import ModelConfig
+    from toolgate_eval.runner import model_config_hash
+
+    base = ModelConfig(provider="openrouter", model="a/b:free")
+    assert model_config_hash(base) == model_config_hash(
+        ModelConfig(provider="openrouter", model="a/b:free")
+    )
+    for changed in (
+        ModelConfig(provider="openrouter", model="a/c:free"),
+        ModelConfig(provider="openrouter", model="a/b:free", temperature=0.5),
+        ModelConfig(provider="openrouter", model="a/b:free", base_url="http://x"),
+        ModelConfig(provider="openrouter", model="a/b:free", max_tokens=99),
+        ModelConfig(provider="bedrock", model="a/b:free"),
+    ):
+        assert model_config_hash(changed) != model_config_hash(base)
+    # the env var NAME is not a model setting
+    assert model_config_hash(
+        ModelConfig(provider="openrouter", model="a/b:free", api_key_env="OTHER")
+    ) == model_config_hash(base)
+
+
+async def test_jsonl_is_ascii_only(tmp_path: Path):
+    results = tmp_path / "run.jsonl"
+    await run_matrix(
+        [spec("dp-01", model="modèle")], results_path=results, ctx=Harness().ctx
+    )
+    raw = results.read_bytes()
+    assert raw.isascii()
+    assert rb"mod\u00e8le" in raw
+    assert episodes(results)[0]["model"] == "modèle"
+
+
+async def test_resume_key_uses_per_model_config_hash(tmp_path: Path):
+    results = tmp_path / "run.jsonl"
+    specs = [spec("dp-01", model="strong"), spec("dp-01", model="small")]
+    first = await run_matrix(
+        specs,
+        results_path=results,
+        ctx=Harness(model_hashes={"strong": "a" * 64, "small": "b" * 64}).ctx,
+    )
+    assert first.ran == 2
+    # models.yaml changed (whole-file hash differs) but only `small`'s entry did
+    again = await run_matrix(
+        specs,
+        results_path=results,
+        ctx=Harness(
+            models_yaml_hash="n" * 64,
+            model_hashes={"strong": "a" * 64, "small": "z" * 64},
+        ).ctx,
+    )
+    assert (again.ran, again.skipped) == (1, 1)
+    assert [r["model"] for r in episodes(results)] == ["strong", "small", "small"]
+
+
+async def test_results_lock_refuses_a_second_run(tmp_path: Path):
+    results = tmp_path / "sub" / "run.jsonl"
+    results.parent.mkdir()
+    lock = tmp_path / "sub" / "run.jsonl.lock"
+    lock.write_text("", encoding="utf-8")
+    with pytest.raises(RunnerError) as info:
+        await run_matrix([spec("dp-01")], results_path=results, ctx=Harness().ctx)
+    message = str(info.value)
+    assert "run.jsonl.lock" in message
+    assert str(tmp_path) not in message  # names the file only
+    assert lock.exists()  # someone else's lock is never removed
+    assert not results.exists()
+
+
+async def test_results_lock_held_during_run_and_removed_after(tmp_path: Path):
+    results = tmp_path / "run.jsonl"
+    lock = tmp_path / "run.jsonl.lock"
+    seen: list[bool] = []
+    h = Harness()
+    plain_connect = h._connect
+
+    async def connect(urls: list[str], provider: Any, *, token_providers: Any) -> Any:
+        seen.append(lock.exists())
+        return await plain_connect(urls, provider, token_providers=token_providers)
+
+    h.ctx.connect = connect
+    await run_matrix([spec("dp-01")], results_path=results, ctx=h.ctx)
+    assert seen == [True]
+    assert not lock.exists()
+
+
+async def test_results_lock_removed_when_the_run_raises(tmp_path: Path):
+    results = tmp_path / "run.jsonl"
+    h = Harness(agent_raises=ValueError("a bug"))
+    with pytest.raises(ValueError):
+        await run_matrix([spec("dp-01")], results_path=results, ctx=h.ctx)
+    assert not (tmp_path / "run.jsonl.lock").exists()
+    # and a fairness refusal also releases it
+    with pytest.raises(RunnerError):
+        await run_matrix(
+            [spec("dp-01", "gateway")], results_path=results, ctx=Harness().ctx
+        )
+    assert not (tmp_path / "run.jsonl.lock").exists()

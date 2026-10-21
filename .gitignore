@@ -186,3 +186,6 @@ infra/keycloak/generated/
 .terraform/
 *.tfvars
 !*.tfvars.example
+
+# Eval results-file locks (toolgate-eval run)
+*.jsonl.lock
