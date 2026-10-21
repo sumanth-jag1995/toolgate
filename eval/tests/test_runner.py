@@ -399,6 +399,7 @@ def direct_record(corpus: str = "c" * 64) -> dict[str, Any]:
         "run_id": "old",
         "corpus_hash": corpus,
         "models_yaml_hash": "m" * 64,
+        "model_config_hash": "m" * 64,
         "variant_id": "dp-02",
         "task_id": "payment-confirmation",
         "condition": "direct",
@@ -1042,3 +1043,135 @@ async def test_results_lock_removed_when_the_run_raises(tmp_path: Path):
             [spec("dp-01", "gateway")], results_path=results, ctx=Harness().ctx
         )
     assert not (tmp_path / "run.jsonl.lock").exists()
+
+
+# --- fix round 1: finish_reason, per-model fairness, lock contents, smoke ------------
+
+
+async def test_finish_reason_recorded_and_length_is_an_error(tmp_path: Path):
+    results = tmp_path / "run.jsonl"
+    ok = Harness(
+        script=[AIMessage(content="Done.", response_metadata={"finish_reason": "stop"})]
+    )
+    await run_matrix([spec("dp-01")], results_path=results, ctx=ok.ctx)
+    cut = Harness(
+        script=[AIMessage(content="Do", response_metadata={"finish_reason": "length"})]
+    )
+    await run_matrix([spec("dp-02")], results_path=results, ctx=cut.ctx)
+    first, second = episodes(results)
+    assert first["finish_reason"] == "stop" and first["error"] is None
+    assert first["leaked"] is False
+    assert second["finish_reason"] == "length"
+    assert second["error"] == "output_truncated"
+    assert second["leaked"] is None and second["task_completed"] is None
+
+
+async def test_fairness_needs_direct_results_under_the_same_model_config(
+    tmp_path: Path,
+):
+    results = tmp_path / "run.jsonl"
+    hashes = {"strong": "a" * 64, "small": "b" * 64}
+    await run_matrix(
+        [spec("dp-01", model="strong")],
+        results_path=results,
+        ctx=Harness(model_hashes=hashes).ctx,
+    )
+    # small has no direct results at all
+    with pytest.raises(RunnerError, match="small"):
+        await run_matrix(
+            [spec("dp-01", "gateway", model="small")],
+            results_path=results,
+            ctx=Harness(model_hashes=hashes).ctx,
+        )
+    # strong's config changed since its direct run
+    with pytest.raises(RunnerError, match="config"):
+        await run_matrix(
+            [spec("dp-01", "gateway", model="strong")],
+            results_path=results,
+            ctx=Harness(model_hashes={"strong": "z" * 64}).ctx,
+        )
+    ok = await run_matrix(
+        [spec("dp-01", "gateway", model="strong")],
+        results_path=results,
+        ctx=Harness(model_hashes=hashes).ctx,
+    )
+    assert ok.ran == 1
+
+
+async def test_lock_records_pid_start_and_run_id(tmp_path: Path):
+    import os as _os
+
+    results = tmp_path / "run.jsonl"
+    lock = tmp_path / "run.jsonl.lock"
+    seen: list[dict[str, Any]] = []
+    h = Harness()
+    plain_connect = h._connect
+
+    async def connect(urls: list[str], provider: Any, *, token_providers: Any) -> Any:
+        seen.append(json.loads(lock.read_text(encoding="utf-8")))
+        return await plain_connect(urls, provider, token_providers=token_providers)
+
+    h.ctx.connect = connect
+    await run_matrix([spec("dp-01")], results_path=results, ctx=h.ctx)
+    (info,) = seen
+    assert set(info) == {"pid", "started_at", "run_id"}
+    assert info["pid"] == _os.getpid() and info["run_id"] == "run-1"
+
+
+async def test_lock_refusal_shows_holder(tmp_path: Path):
+    results = tmp_path / "run.jsonl"
+    lock = tmp_path / "run.jsonl.lock"
+    lock.write_text(
+        json.dumps(
+            {"pid": 4242, "started_at": "2026-10-21T06:00:00+00:00", "run_id": "r-9"}
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RunnerError) as info:
+        await run_matrix([spec("dp-01")], results_path=results, ctx=Harness().ctx)
+    message = str(info.value)
+    for part in ("run.jsonl.lock", "4242", "2026-10-21T06:00:00+00:00", "r-9"):
+        assert part in message
+    assert str(tmp_path) not in message
+    lock.write_text("not json \x00", encoding="utf-8")
+    with pytest.raises(RunnerError, match="unreadable"):
+        await run_matrix([spec("dp-01")], results_path=results, ctx=Harness().ctx)
+
+
+def test_smoke_selection_reaches_both_models():
+    from toolgate_eval.runner import select_models
+
+    models = {"strong": "s", "small": "t", "other": "u"}
+    assert select_models(models, None) == models
+    assert list(select_models(models, ["small", "strong"])) == ["strong", "small"]
+    with pytest.raises(RunnerError, match="nope"):
+        select_models(models, ["nope"])
+    # the README smoke: direct, attack only, 3 variants, 1 repeat, both models
+    specs = list(
+        iter_matrix(
+            CORPUS,
+            build_tasks(),
+            list(select_models(models, ["strong", "small"])),
+            ["direct"],
+            1,
+            clean=False,
+            variant_ids=["dp-01", "dp-02", "dp-03"],
+        )
+    )
+    assert len(specs) == 6
+    assert Counter(s.model for s in specs) == {"strong": 3, "small": 3}
+    assert {s.variant_id for s in specs} == {"dp-01", "dp-02", "dp-03"}
+
+
+def test_cli_run_only_models(monkeypatch, tmp_path: Path):
+    seen: list[Any] = []
+
+    async def fake(opts: Any) -> RunSummary:
+        seen.append(opts)
+        return RunSummary(ran=1)
+
+    monkeypatch.setattr(cli.runner, "run_cli", fake)
+    assert cli.main(["run", "--only-models", "strong,small"]) == 0
+    assert seen[0].only_models == ["strong", "small"]
+    assert cli.main(["run"]) == 0
+    assert seen[1].only_models is None

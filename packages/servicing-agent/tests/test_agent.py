@@ -131,6 +131,7 @@ async def test_trace_holds_no_arguments_or_outputs(toolkit, make_model, make_too
         "tool_calls",
         "stop_reason",
         "error",
+        "finish_reason",  # a coarse provider label, never content
     ]
     dumped = repr(trace)
     assert "secret-argument-value" not in dumped
@@ -200,3 +201,33 @@ def test_system_prompt_is_plain_servicing_prompt():
     assert "tool" in text
     for banned in ("security", "canary", "attack", "inject", "malicious", "poison"):
         assert banned not in text
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected"),
+    [
+        ({"finish_reason": "length"}, "length"),
+        ({"finish_reason": "stop", "model_name": "x"}, "stop"),
+        ({"stop_reason": "max_tokens"}, "max_tokens"),  # Bedrock/Anthropic key
+        ({}, None),
+        ({"finish_reason": 7}, None),  # not a string: not recorded
+        ({"finish_reason": "x" * 200}, "x" * 32),  # coarse label, bounded
+    ],
+)
+async def test_finish_reason_from_last_message_metadata(
+    toolkit, make_model, make_tool_call, metadata, expected
+):
+    call = make_tool_call("core-read_get_claim_status", {"claim_id": "C-77"}, "c1")
+    call.response_metadata = {"finish_reason": "tool_calls"}
+    model = make_model(
+        script=[call, AIMessage(content="secret-final", response_metadata=metadata)]
+    )
+    trace = await ServicingAgent(model, toolkit).run("Status of C-77?")
+    assert trace.finish_reason == expected
+    assert trace.steps == 2
+
+
+async def test_finish_reason_none_without_a_model_response(toolkit, make_model):
+    model = make_model(script=[RuntimeError("boom")])
+    trace = await ServicingAgent(model, toolkit).run("Hello")
+    assert trace.finish_reason is None

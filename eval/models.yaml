@@ -10,6 +10,10 @@ strong:
   provider: openrouter
   model: nvidia/nemotron-3-ultra-550b-a55b:free
   temperature: 0
+  # Reasoning model: hidden reasoning tokens count against max_tokens, so the
+  # 1024 default could cut turns off (finish_reason "length" -> output_truncated).
+  # Changing this changes `strong`'s config hash (its episodes re-run).
+  max_tokens: 4096
   api_key_env: OPENROUTER_API_KEY
 small:
   # Smaller: Google Gemma 4 31B instruct (dense 31B), native function calling, tools + tool_choice.

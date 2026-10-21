@@ -2,7 +2,9 @@
 
 The agent keeps no record of tool arguments or results. An episode trace holds
 the model's final text, the number of model calls, the names of the tools that
-were called, why the episode stopped, and an error *type* (never a message).
+were called, why the episode stopped, an error *type* (never a message) and
+the provider's coarse ``finish_reason`` label for the last model response
+(e.g. "stop", "length", "tool_calls"; never content).
 """
 
 from __future__ import annotations
@@ -30,6 +32,23 @@ class EpisodeTrace:
     tool_calls: list[ToolCallRecord]
     stop_reason: StopReason
     error: str | None
+    finish_reason: str | None = None
+
+
+FINISH_REASON_MAX = 32
+_FINISH_KEYS = ("finish_reason", "stop_reason")  # OpenAI-style, Bedrock/Anthropic
+
+
+def finish_reason_of(message: AIMessage | None) -> str | None:
+    """The provider's finish label from response metadata: a short string only."""
+    if message is None:
+        return None
+    metadata = getattr(message, "response_metadata", None) or {}
+    for key in _FINISH_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            return value[:FINISH_REASON_MAX]
+    return None
 
 
 def error_label(exc: BaseException) -> str:
@@ -140,4 +159,5 @@ class ServicingAgent:
             tool_calls=self._toolkit.calls[calls_before:],
             stop_reason=stop_reason,
             error=error,
+            finish_reason=finish_reason_of(last),
         )

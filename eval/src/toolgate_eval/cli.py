@@ -45,6 +45,12 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--max-episodes", type=int, default=None)
     run.add_argument("--variants", type=_csv, default=None)
     run.add_argument(
+        "--only-models",
+        type=_csv,
+        default=None,
+        help="comma-separated models.yaml names to run (default: all)",
+    )
+    run.add_argument(
         "--keep-errors",
         action="store_true",
         help="treat recorded error episodes as done instead of retrying them",
@@ -82,6 +88,7 @@ def _run(args: argparse.Namespace) -> int:
         attack=not args.clean_only,
         clean=not args.attack_only,
         keep_errors=args.keep_errors,
+        only_models=args.only_models,
     )
     try:
         summary = asyncio.run(runner.run_cli(opts))
@@ -114,12 +121,13 @@ def _report(args: argparse.Namespace) -> int:
 
 
 def _utf8_when_redirected(stream: Any) -> None:
-    """md/json are files for READMEs and tools: write UTF-8 when redirected,
-    whatever the console code page (a TTY keeps safe_print's fallback)."""
+    """md/json are files for READMEs and tools: write UTF-8 with LF newlines
+    when redirected, whatever the console code page or platform (a TTY keeps
+    safe_print's fallback)."""
     try:
         if stream.isatty():
             return
-        stream.reconfigure(encoding="utf-8")
+        stream.reconfigure(encoding="utf-8", newline="\n")
     except (AttributeError, OSError, ValueError):
         pass  # not a TextIOWrapper (e.g. a test capture): leave it alone
 
