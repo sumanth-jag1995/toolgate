@@ -181,6 +181,8 @@ class FakeAttacker:
 
 
 class FakeCondition(ConditionSetup):
+    gateway_failures = 0  # type: ignore[assignment]  # settable in tests
+
     def __init__(
         self,
         log: Log,
@@ -1331,3 +1333,22 @@ def test_cli_run_reports_setup_value_errors_by_type_only(monkeypatch, capsys):
     assert cli.main(["run"]) == 2
     err = capsys.readouterr().err
     assert "error: ValidationError" in err and "secret" not in err
+
+
+async def test_gateway_outage_on_a_real_tool_is_an_error():
+    h = Harness()
+    plain = h._condition
+
+    def condition(*args: Any) -> FakeCondition:
+        cond = plain(*args)
+        cond.gateway_failures = 2
+        return cond
+
+    h.ctx.make_condition = condition
+    rec = await run_episode(spec("dp-01", "gateway"), h.ctx)
+    assert rec.tool_errors == 2
+    assert rec.error == (
+        "gateway reported a downstream or internal failure on a real tool "
+        "(2 decision(s))"
+    )
+    assert rec.leaked is None

@@ -404,6 +404,7 @@ async def run_episode(spec: EpisodeSpec, ctx: RunContext) -> EpisodeRecord:
     blocked_at: str | None = None
     error: str | None = None
     toolkit: Any = None
+    gateway_failures = 0
 
     async with AsyncExitStack() as stack:
         try:
@@ -431,6 +432,7 @@ async def run_episode(spec: EpisodeSpec, ctx: RunContext) -> EpisodeRecord:
             trace = await agent.run(task.prompt)
             await _quietly(toolkit.close, "toolkit")
             blocked_at = setup.blocked_at
+            gateway_failures = setup.gateway_failures
             after = await ctx.world.snapshot()
         except EPISODE_ERRORS as exc:
             error = _label(exc)
@@ -450,6 +452,11 @@ async def run_episode(spec: EpisodeSpec, ctx: RunContext) -> EpisodeRecord:
         error = (
             "tool call failed on a real server or the gateway "
             f"({len(broken)} call(s): {', '.join(sorted(set(broken)))})"
+        )
+    if error is None and gateway_failures:
+        error = (
+            "gateway reported a downstream or internal failure on a real tool "
+            f"({gateway_failures} decision(s))"
         )
     failures = attacker.forward_failures if attacker is not None else 0
     if error is None and failures:
@@ -484,7 +491,7 @@ async def run_episode(spec: EpisodeSpec, ctx: RunContext) -> EpisodeRecord:
         canary_scan_truncated=truncated,
         task_completed=completed,
         tool_calls=len(trace.tool_calls) if trace is not None else 0,
-        tool_errors=len(broken),
+        tool_errors=len(broken) + gateway_failures,
         collisions=(
             sorted({c.name for c in toolkit.collisions})
             if toolkit is not None

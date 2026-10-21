@@ -38,6 +38,16 @@ but dropped from the gateway's verified snapshot while the attacker listed
 it), ``"call"`` (a ``deny_*`` decision for the attacker's tool and none of
 its calls forwarded with ``allow``/``flag_output``) or None.
 
+``gateway_failures`` counts what the gateway masks as a tool error for a
+REAL (non-attack) tool: ``error_*`` audit decisions (``error_downstream``:
+a real server down, timed out or failing; ``error_audit_down``) plus calls
+on which ``GatewayCore.call_tool`` raised (the app answers those with its
+internal-error message and records no decision). The runner makes such an
+episode an error, as a failed real-server call is in the direct arm.
+Decisions on the attack tool stay blocks. (The eval's :class:`NullAudit`
+always accepts, so the audit-down refusal, which records no decision,
+cannot occur here.)
+
 Secrets (client secrets, tokens) are never logged, written to a temp file or
 put in an exception message: the temp lockfile stores header TEMPLATES only.
 """
@@ -318,6 +328,21 @@ def derive_blocked_at(
     return None
 
 
+def count_gateway_failures(
+    attack_tools: Iterable[str] | None,
+    decisions: Iterable[Decision],
+    *,
+    internal_errors: int = 0,
+) -> int:
+    """Gateway-side failures on real tools: ``error_*`` decisions for tools
+    outside ``attack_tools``, plus ``internal_errors`` (calls that raised)."""
+    attack = set(attack_tools or ())
+    failed = sum(
+        1 for tool, d, _ in decisions if d.startswith("error_") and tool not in attack
+    )
+    return failed + internal_errors
+
+
 def servicing_allowlist(variant_server_id: str | None) -> list[str]:
     """``servicing``'s committed patterns, plus the eval's extra
     (``core-write.log_claim``: see the module docstring) and ``<server>.*``
@@ -378,6 +403,12 @@ class ConditionSetup:
     @property
     def blocked_at(self) -> BlockedAt:
         return None
+
+    @property
+    def gateway_failures(self) -> int:
+        """Real-tool failures the gateway masked as tool errors (0 when there
+        is no gateway)."""
+        return 0
 
     async def close(self) -> None:  # pragma: no cover - overridden
         return None
@@ -495,6 +526,7 @@ class GatewayCondition(ConditionSetup):
         self.token_providers = {}
         self.expected_endpoints = frozenset()
         self.audit = NullAudit()
+        self._internal_errors = 0
         self.approvals: dict[tuple[str, str], Literal["approve", "block"]] = {}
         self.pins = PinSet({})
         self.gateway_url = ""
@@ -658,6 +690,7 @@ class GatewayCondition(ConditionSetup):
             hmac_key=settings.audit_hmac_key,
         )
         self.core = core
+        self._count_internal_errors(core)
         self._owned.stack.push_async_callback(core.pool.close)  # idempotent
         app = build_app(core, verifier, settings)
         config = uvicorn.Config(
@@ -722,19 +755,53 @@ class GatewayCondition(ConditionSetup):
             return False
         return await self._attacker.mutate()
 
+    def _attack_tools(self) -> set[str]:
+        variant = self._variant
+        if variant is None:
+            return set()
+        names = {variant.approved["name"]}
+        if variant.mutated is not None:
+            names.add(variant.mutated["name"])
+        return {namespaced(variant.server_id, n) for n in names}
+
+    def _count_internal_errors(self, core: GatewayCore) -> None:
+        """Wrap ``core.call_tool`` to count calls that raise (the app turns
+        them into its internal-error tool result, with no audit decision)."""
+        original = core.call_tool
+
+        async def counted(
+            client_id: str,
+            agent_id: str,
+            name: str,
+            arguments: dict[str, Any] | None,
+        ) -> Any:
+            try:
+                return await original(client_id, agent_id, name, arguments)
+            except Exception:
+                if name not in self._attack_tools():
+                    self._internal_errors += 1
+                raise
+
+        core.call_tool = counted  # type: ignore[method-assign]
+
+    @property
+    def gateway_failures(self) -> int:
+        return count_gateway_failures(
+            self._attack_tools(),
+            self.audit.decisions,
+            internal_errors=self._internal_errors,
+        )
+
     @property
     def blocked_at(self) -> BlockedAt:
         variant, core = self._variant, self.core
         if variant is None or core is None:
             return None
         sid = variant.server_id
-        names = {variant.approved["name"]}
-        if variant.mutated is not None:
-            names.add(variant.mutated["name"])
         server_pin: ServerPin | None = self.pins.get(sid)
         pinned = server_pin.tools if server_pin is not None else {}
         return derive_blocked_at(
-            {namespaced(sid, n) for n in names},
+            self._attack_tools(),
             pinned={namespaced(sid, n) for n in pinned},
             listed={
                 namespaced(s, t.name)

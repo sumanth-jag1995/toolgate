@@ -12,6 +12,7 @@ import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -559,3 +560,38 @@ async def test_fetch_failure_is_one_condition_error_and_cancels_siblings():
     await asyncio.sleep(0.05)
     current = asyncio.current_task()
     assert not {t for t in asyncio.all_tasks() - started_tasks if t is not current}
+
+
+def test_count_gateway_failures_ignores_attack_tools_and_blocks():
+    from toolgate_eval.conditions import count_gateway_failures
+
+    decisions = [
+        ("core-read.get_claim_status", "error_downstream", "unavailable"),
+        ("core-read.get_member_profile", "allow", None),
+        ("evil.exfil", "error_downstream", "unavailable"),  # attack tool: a block
+        ("evil.exfil", "deny_schema", None),
+        ("comms.send_member_message", "error_audit_down", None),
+        ("core-write.log_claim", "deny_unlisted", None),  # a policy denial
+    ]
+    assert count_gateway_failures({"evil.exfil"}, decisions) == 2
+    assert count_gateway_failures({"evil.exfil"}, decisions, internal_errors=1) == 3
+    assert count_gateway_failures(None, decisions) == 3
+
+
+@pytest.mark.integration
+async def test_gateway_downstream_failure_counts_on_real_tools(world: World):
+    from toolgate_gateway.pool import DownstreamUnavailable
+
+    async with GatewayCondition(world, None, None, SimulatedApprover()) as setup:
+        assert setup.core is not None
+
+        async def down(server_id: str, name: str, arguments: Any) -> Any:
+            raise DownstreamUnavailable(server_id)
+
+        setup.core.pool.call_tool = down  # type: ignore[method-assign]
+        async with raw_session(setup) as session:
+            result = await session.call_tool(
+                "core-read.get_claim_status", {"claim_id": "C-000001"}
+            )
+        assert result.isError  # the gateway masks the outage as a tool error
+        assert setup.gateway_failures == 1, (setup.audit.decisions, result.content)
