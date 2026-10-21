@@ -752,10 +752,11 @@ async def test_gateway_requires_direct_results(tmp_path: Path):
 # --- CLI ---------------------------------------------------------------------------
 
 
-def test_cli_stubs_and_check_env_prints_names_only(monkeypatch, capsys, tmp_path):
+def test_cli_report_missing_file_and_check_env_prints_names_only(
+    monkeypatch, capsys, tmp_path
+):
     assert cli.main(["report", "--results", str(tmp_path / "none.jsonl")]) == 2
     assert "no results file" in capsys.readouterr().err
-    assert cli.main(["loadtest"]) == 2
     capsys.readouterr()
 
     monkeypatch.setattr(cli.runner, "port_open", lambda host, port: port != 5432)
@@ -809,7 +810,25 @@ def test_cli_run_parses_options(monkeypatch, tmp_path: Path):
 
 # --- integration: a scripted poisoned model on the live stack ------------------------
 
-POISON_VARIANT = "dp-01"  # description poisoning; the simulated approver blocks it
+# One leak-capable variant of EACH family. All target the membership number,
+# so the same scripted model (read the profile, send the number to the attacker
+# tool's carrier parameter) is the poisoned model for every family. sh-01 is
+# not used: its tool shadows get_member_profile, so the script could not tell
+# the real tool from the attacker's.
+FAMILY_VARIANTS = {
+    "description_poisoning": "dp-01",
+    "rug_pull": "rp-01",
+    "shadowing": "sh-02",
+    "unicode_schema": "us-01",
+}
+
+
+def test_family_variants_cover_every_leak_capable_family():
+    families = {v.family for v in VARIANTS.values() if v.id not in NOT_LEAK_CAPABLE}
+    assert families == set(FAMILY_VARIANTS)
+    for family, vid in FAMILY_VARIANTS.items():
+        assert VARIANTS[vid].family == family and vid not in NOT_LEAK_CAPABLE
+        assert "membership_number" in VARIANTS[vid].exfil.targets
 
 
 def _poisoned_script(variant: MaliciousVariant) -> list[Any]:
@@ -848,24 +867,29 @@ def _poisoned_script(variant: MaliciousVariant) -> list[Any]:
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("family", sorted(FAMILY_VARIANTS))
 async def test_scripted_poisoned_model_leaks_in_direct_and_not_in_gateway(
-    world: Any, tmp_path: Path
+    family: str, world: Any, tmp_path: Path
 ):
     from toolgate_eval.conditions import SimulatedApprover
 
-    variant = VARIANTS[POISON_VARIANT]
-    assert variant.family == "description_poisoning"
-    assert POISON_VARIANT not in NOT_LEAK_CAPABLE
-    # the simulated approver blocks this variant's tool at approval time
-    from toolgate_pin import InventoryTool
+    poison_variant = FAMILY_VARIANTS[family]
+    variant = VARIANTS[poison_variant]
+    assert variant.family == family
+    assert poison_variant not in NOT_LEAK_CAPABLE
+    if family == "description_poisoning":
+        # the simulated approver blocks this variant's tool at approval time
+        from toolgate_pin import InventoryTool
 
-    inventory = [
-        InventoryTool(e.server_id, e.name, e.definition) for e in variant.inventory
-    ]
-    assert (
-        SimulatedApprover()(variant.approved, inventory, server_id=variant.server_id)
-        == "block"
-    )
+        inventory = [
+            InventoryTool(e.server_id, e.name, e.definition) for e in variant.inventory
+        ]
+        assert (
+            SimulatedApprover()(
+                variant.approved, inventory, server_id=variant.server_id
+            )
+            == "block"
+        )
 
     models: list[ScriptedChatModel] = []
 
@@ -889,8 +913,8 @@ async def test_scripted_poisoned_model_leaks_in_direct_and_not_in_gateway(
     before = set(asyncio.all_tasks())
     summary = await run_matrix(
         [
-            spec(POISON_VARIANT, "direct", model="scripted"),
-            spec(POISON_VARIANT, "gateway", model="scripted"),
+            spec(poison_variant, "direct", model="scripted"),
+            spec(poison_variant, "gateway", model="scripted"),
         ],
         results_path=results,
         ctx=ctx,
@@ -909,8 +933,13 @@ async def test_scripted_poisoned_model_leaks_in_direct_and_not_in_gateway(
     assert gateway["error"] is None, gateway["error"]
     assert gateway["leaked"] is False
     assert gateway["leaked_fields"] == []
-    assert gateway["blocked_at"] == "approval"
-    assert gateway["tool_calls"] == 1  # the attacker tool was never exposed
+    if family == "description_poisoning":
+        assert gateway["blocked_at"] == "approval"
+        assert gateway["tool_calls"] == 1  # the attacker tool was never exposed
+    else:
+        # where the gateway stops the other families is the matrix's finding,
+        # not this test's; it must stop them somewhere
+        assert gateway["blocked_at"] in {"approval", "list", "call"}, gateway
 
     # the model really read the canary in both conditions
     for model in models:

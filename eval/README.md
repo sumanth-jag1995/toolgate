@@ -348,3 +348,48 @@ Run the commands above, then replace this section with the output of
 - Gateway attack episodes only; n = leaked + no leak. approval: never pinned; list: dropped from the verified snapshot; call: a deny_* decision and no delivered call.
 - call is NOT 'no exfiltration': deny_output withholds the downstream's result, but the call (and its arguments) reached the attacker, so the sink may have seen a canary. Read the leaked column.
 - Leak(s) from variants flagged not leak-capable (rp-04, rp-05, us-03), counted in every table: rp-04 (strong, direct, repeat 0).
+
+## Gateway overhead load test
+
+```
+uv run toolgate-eval loadtest --total 5000 --concurrency 50 [--warmup 200] [--format md|json]
+```
+
+Calls `get_claim_status` for the canary member's claim directly on `core-read`
+(`localhost:8101`, `dev-tester` token) and through the compose gateway
+(`localhost:8200`, `servicing` token, `core-read.get_claim_status`: real audit
+writer, pins and tracing). One persistent session per worker, warm-up calls
+discarded, the two paths run in alternating 250-call blocks. Failed calls are
+counted, never timed. Overhead = gateway - direct. Whether p95 overhead is
+under the 30 ms target is reported, not asserted in tests (it is
+machine-dependent). Gateway, MCP servers, Postgres, Keycloak and the load
+generator all share one host: there is no real network latency and CPU
+contention is included.
+
+Recorded 2026-10-21, Windows 11 (AMD64), 16 CPUs, Docker Desktop, Python
+3.12.10, commit of this change. Times in ms, 0 errors in every run.
+
+| Run (calls per side) | Path | p50 | p95 | p99 | max | calls/s | Overhead p50 / p95 | p95 overhead < 30 ms |
+|---|---|---|---|---|---|---|---|---|
+| 5000 x 50 (as specified) | direct | 662.8 | 1349.7 | 1823.2 | 2807.0 | 63 | | |
+| | gateway | 1042.6 | 1258.0 | 1450.0 | 1799.6 | 47 | 379.8 / -91.7 | not meaningful (saturated) |
+| 1000 x 5 | direct | 91.2 | 125.1 | 143.6 | 193.8 | 53 | | |
+| | gateway | 124.3 | 176.2 | 209.5 | 242.6 | 39 | 33.1 / 51.1 | no |
+| 1000 x 1 | direct | 28.9 | 31.1 | 33.4 | 64.2 | 34 | | |
+| | gateway | 46.1 | 50.2 | 61.4 | 90.4 | 21 | 17.1 / 19.1 | yes |
+
+How to read this:
+
+- At 50 workers both paths are saturated on this one machine (63 and 47
+  calls/s): a closed loop of 50 in flight turns latency into queueing time
+  (roughly 50 / throughput), so the p95 difference (-91.7 ms) is an artefact
+  of the tail, not a measure of gateway cost. The "yes" the tool prints for
+  that row is not evidence that the target is met.
+- The p50 gap at saturation (380 ms) is the throughput ratio, i.e. the
+  gateway serves about 25% fewer calls per second than a direct server here.
+- Per-call overhead is best read at low concurrency: about 17 ms at p50 and
+  19 ms at p95 with one caller (under the 30 ms target), growing to 33 / 51 ms
+  with five concurrent callers on this host.
+- The direct path itself costs about 29 ms per call here (MCP server ->
+  mock API -> Postgres, all in Docker on Windows), so absolute numbers are
+  dominated by this setup. Re-run on the machine that matters.

@@ -66,7 +66,11 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="corpus to report (default: the corpus of the last record)",
     )
-    sub.add_parser("loadtest", help="gateway load test")
+    lt = sub.add_parser("loadtest", help="gateway overhead load test (compose stack)")
+    lt.add_argument("--total", type=int, default=5000, help="timed calls per side")
+    lt.add_argument("--concurrency", type=int, default=50)
+    lt.add_argument("--warmup", type=int, default=200)
+    lt.add_argument("--format", choices=("md", "json"), default="md")
     return p
 
 
@@ -132,6 +136,24 @@ def _utf8_when_redirected(stream: Any) -> None:
         pass  # not a TextIOWrapper (e.g. a test capture): leave it alone
 
 
+def _loadtest(args: argparse.Namespace) -> int:
+    from toolgate_eval import loadtest
+
+    params = {
+        "total": args.total,
+        "concurrency": args.concurrency,
+        "warmup": args.warmup,
+    }
+    try:
+        result = asyncio.run(loadtest.run_loadtest(**params))
+    except (loadtest.LoadTestError, WorldError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    fmt = loadtest.format_json if args.format == "json" else loadtest.format_md
+    print(fmt(result, **params))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "check-env":
@@ -140,8 +162,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run(args)
     if args.command == "report":
         return _report(args)
-    print("loadtest not available yet")
-    return 2
+    return _loadtest(args)
 
 
 if __name__ == "__main__":
