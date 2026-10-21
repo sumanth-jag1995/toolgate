@@ -686,8 +686,12 @@ async def test_429_backoff_then_success(tmp_path: Path):
     assert h.sleeps == [BACKOFF_BASE_S, 2 * BACKOFF_BASE_S] == [5.0, 10.0]
     assert summary.ran == 1 and summary.errors == 0 and summary.stopped is None
     assert h.world.reseeds == 3  # each retry is a fresh episode
-    (rec,) = episodes(results)
+    *discarded, rec = episodes(results)
     assert rec["error"] is None and rec["stop_reason"] == "final"
+    assert rec["superseded"] is False
+    # the discarded 429 attempts are stored, flagged superseded
+    assert [r["superseded"] for r in discarded] == [True, True]
+    assert all("(HTTP 429)" in r["error"] for r in discarded)
 
 
 async def test_quota_exhausted_stops_cleanly_exit_3(tmp_path: Path):
@@ -700,7 +704,8 @@ async def test_quota_exhausted_stops_cleanly_exit_3(tmp_path: Path):
     assert MAX_ATTEMPTS == 5
     assert h.sleeps == [5.0, 10.0, 20.0, 40.0]
     assert len(h.models) == 5  # dp-02 never started
-    assert episodes(results) == []  # the 429 attempts are not stored
+    # the 429 attempts are stored as superseded rows, never as results
+    assert [r["superseded"] for r in episodes(results)] == [True] * 5
     (event,) = [r for r in lines(results) if r.get("event") == "quota_exhausted"]
     assert event["run_id"] == "run-1"
     assert re.match(r"\d{4}-\d{2}-\d{2}T", event["at"])
@@ -1204,3 +1209,125 @@ def test_cli_run_only_models(monkeypatch, tmp_path: Path):
     assert seen[0].only_models == ["strong", "small"]
     assert cli.main(["run"]) == 0
     assert seen[1].only_models is None
+
+
+# --- final review: transport failures, observed leaks, targets, collisions ---------
+
+
+def _trace_agent(tool_calls: list[Any], stop_reason: str = "final") -> Any:
+    from servicing_agent.agent import EpisodeTrace
+
+    class Fixed:
+        async def run(self, prompt: str) -> Any:
+            return EpisodeTrace("ok", 2, list(tool_calls), stop_reason, None)  # type: ignore[arg-type]
+
+    return lambda model, toolkit: Fixed()
+
+
+async def test_real_server_transport_failure_is_an_error():
+    from servicing_agent.mcp_tools import ToolCallRecord
+
+    real = "http://127.0.0.1:8101/mcp"
+    h = Harness()
+    h.ctx.make_agent = _trace_agent(
+        [
+            ToolCallRecord("get_member_profile", True, real),
+            ToolCallRecord("get_claim_status", False, real, "McpError"),
+        ]
+    )
+    rec = await run_episode(spec("dp-01"), h.ctx)
+    assert rec.tool_errors == 1
+    assert (
+        rec.error
+        == "tool call failed on a real server or the gateway (1 call(s): McpError)"
+    )
+    assert rec.leaked is None and rec.task_completed is None
+
+
+async def test_attacker_tool_failure_and_error_results_are_not_transport_errors():
+    from servicing_agent.mcp_tools import ToolCallRecord
+
+    h = Harness()
+    h.ctx.make_agent = _trace_agent(
+        [
+            # a failed call to the attacker server (FakeAttacker's url)
+            ToolCallRecord("exfil", False, "http://127.0.0.1:7001/mcp", "ConnectError"),
+            # an isError result (e.g. a gateway denial) is an answer, not a failure
+            ToolCallRecord("get_claim_status", False, "http://127.0.0.1:8101/mcp"),
+        ]
+    )
+    rec = await run_episode(spec("dp-01"), h.ctx)
+    assert rec.tool_errors == 0 and rec.error is None and rec.leaked is False
+
+
+async def test_leak_observed_in_an_errored_attempt_is_kept():
+    h = Harness(script=[ServerError("x")], report=LeakReport({"email"}, False))
+    rec = await run_episode(spec("dp-01"), h.ctx)
+    assert rec.error == "ServerError (HTTP 503)"
+    assert rec.leaked is True and rec.leaked_fields == ["email"]
+    assert rec.task_completed is None
+
+
+async def test_discarded_429_attempt_keeps_its_observed_leak(tmp_path: Path):
+    results = tmp_path / "run.jsonl"
+    limited = [RateLimitError("slow down")]
+    h = Harness(scripts=[limited, []], report=LeakReport({"email"}, False))
+    await run_matrix([spec("dp-01")], results_path=results, ctx=h.ctx)
+    first, final = episodes(results)
+    assert first["superseded"] is True and first["leaked_fields"] == ["email"]
+    assert first["leaked"] is True
+    assert final["superseded"] is False
+
+
+async def test_superseded_rows_never_count_as_done(tmp_path: Path):
+    results = tmp_path / "run.jsonl"
+    h = Harness(scripts=[[RateLimitError("daily limit")]])
+    await run_matrix([spec("dp-01")], results_path=results, ctx=h.ctx)
+    again = await run_matrix(
+        [spec("dp-01")], results_path=results, ctx=Harness().ctx, keep_errors=True
+    )
+    assert again.ran == 1
+
+
+async def test_record_carries_targets_and_collisions():
+    from servicing_agent.mcp_tools import ToolCollision
+
+    h = Harness()
+    plain_connect = h._connect
+
+    async def connect(urls: list[str], provider: Any, *, token_providers: Any) -> Any:
+        toolkit = await plain_connect(urls, provider, token_providers=token_providers)
+        toolkit.collisions.append(
+            ToolCollision("get_member_profile", "http://a/mcp", "http://b/mcp")
+        )
+        return toolkit
+
+    h.ctx.connect = connect
+    rec = await run_episode(spec("dp-01"), h.ctx)
+    assert rec.target_fields == list(VARIANTS["dp-01"].exfil.targets)
+    assert rec.collisions == ["get_member_profile"]
+    clean = await run_episode(spec(None), Harness().ctx)
+    assert clean.target_fields is None and clean.collisions == []
+
+
+def test_cli_run_reports_setup_value_errors_by_type_only(monkeypatch, capsys):
+    from pydantic import BaseModel
+
+    class Strict(BaseModel):
+        n: int
+
+    async def bad_value(opts: Any) -> RunSummary:
+        raise ValueError("secret-detail-in-message")
+
+    async def bad_model(opts: Any) -> RunSummary:
+        Strict(n="secret-input-value")  # type: ignore[arg-type]
+        return RunSummary()
+
+    monkeypatch.setattr(cli.runner, "run_cli", bad_value)
+    assert cli.main(["run"]) == 2
+    err = capsys.readouterr().err
+    assert "error: ValueError" in err and "secret" not in err
+    monkeypatch.setattr(cli.runner, "run_cli", bad_model)
+    assert cli.main(["run"]) == 2
+    err = capsys.readouterr().err
+    assert "error: ValidationError" in err and "secret" not in err

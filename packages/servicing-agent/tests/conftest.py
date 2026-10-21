@@ -113,17 +113,33 @@ def _free_port() -> int:
 
 @pytest.fixture
 async def serve():
-    """``await serve(fastmcp)`` -> (url, seen_authorization_headers)."""
+    """``await serve(fastmcp, reject=None)`` -> (url, seen_authorization_headers).
+
+    ``reject(authorization_header) -> bool``: answer HTTP 401 instead of
+    serving the request (an expired token, for example)."""
     running: list[tuple[uvicorn.Server, asyncio.Task]] = []
 
-    async def start(mcp: FastMCP) -> tuple[str, list[str | None]]:
+    async def start(
+        mcp: FastMCP, reject: Callable[[str | None], bool] | None = None
+    ) -> tuple[str, list[str | None]]:
         app = mcp.streamable_http_app()
         seen_auth: list[str | None] = []
 
         async def recording_app(scope, receive, send):
             if scope["type"] == "http":
                 headers = dict(scope["headers"])
-                seen_auth.append(headers.get(b"authorization", b"").decode() or None)
+                auth = headers.get(b"authorization", b"").decode() or None
+                seen_auth.append(auth)
+                if reject is not None and reject(auth):
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": 401,
+                            "headers": [(b"content-type", b"text/plain")],
+                        }
+                    )
+                    await send({"type": "http.response.body", "body": b"expired"})
+                    return
             await app(scope, receive, send)
 
         port = _free_port()

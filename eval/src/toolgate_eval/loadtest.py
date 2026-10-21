@@ -47,9 +47,11 @@ GATEWAY_URL = "http://127.0.0.1:8200/mcp"
 DIRECT_TOOL = "get_claim_status"
 GATEWAY_TOOL = "core-read.get_claim_status"
 P95_TARGET_MS = 30.0
-SATURATION_RATIO = 0.8
 DEFAULT_BLOCK = 250
 CALL_TIMEOUT_S = 30.0
+CONTENTION_NOTE = (
+    "host contention included (gateway, servers, Keycloak and Postgres share one host)"
+)
 
 Call = Callable[[], Awaitable[None]]
 
@@ -79,30 +81,16 @@ class LoadResult:
     concurrency: int = 1
 
     @property
-    def saturated(self) -> bool:
-        """True when the run queued behind a shared bottleneck.
-
-        In a closed loop of c workers, c = throughput x mean latency holds
-        by identity (Little's law), so comparing c / throughput with the p50
-        cannot detect queueing. What can: at c > 1 the gateway path serving
-        under ``SATURATION_RATIO`` of the direct path's calls per second means
-        the extra latency is workers waiting behind each other (a
-        single-process server or shared CPU), not per-call cost, so the p95
-        difference is not an overhead. Only valid at c > 1: with one worker a
-        throughput drop is the per-call overhead itself.
-        """
-        d, g = self.direct.throughput_rps, self.gateway.throughput_rps
-        return self.concurrency > 1 and d > 0 and g < SATURATION_RATIO * d
-
-    @property
     def verdict(self) -> str:
         """Is p95 overhead under the 30 ms target: ``yes``, ``no`` or
-        ``inconclusive`` (a side has no samples or any errors, the overhead is
-        negative, or the run is queue-saturated)."""
+        ``inconclusive`` (a side has no samples or any errors, or the p95
+        overhead is negative). Throughput is not part of the verdict: at
+        concurrency > 1 the latency includes host contention, which is noted
+        alongside (:data:`CONTENTION_NOTE`), not used to excuse a "no"."""
         sides = (self.direct, self.gateway)
         if any(x.n == 0 or x.errors > 0 for x in sides):
             return "inconclusive"
-        if self.overhead_p95_ms < 0 or self.saturated:
+        if self.overhead_p95_ms < 0:
             return "inconclusive"
         return "yes" if self.overhead_p95_ms < P95_TARGET_MS else "no"
 
@@ -352,6 +340,7 @@ def to_dict(
         "overhead_p50_ms": result.overhead_p50_ms,
         "overhead_p95_ms": result.overhead_p95_ms,
         "p95_overhead_under_30ms": result.verdict,
+        "contention_note": CONTENTION_NOTE if concurrency > 1 else None,
         "errors": result.errors,
     }
 
@@ -394,6 +383,8 @@ def format_md(result: LoadResult, *, total: int, concurrency: int, warmup: int) 
         ),
         f"- p95 overhead under {P95_TARGET_MS:.0f} ms: {verdict}.",
     ]
+    if concurrency > 1:
+        lines.append(f"- Note: {CONTENTION_NOTE}.")
     if result.errors:
         lines.append(f"- Errors by side:type: {json.dumps(result.errors)}")
     return "\n".join(lines)

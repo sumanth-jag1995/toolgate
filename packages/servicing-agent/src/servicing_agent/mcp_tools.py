@@ -2,8 +2,16 @@
 
 One client session per server URL. Each MCP tool becomes a ``StructuredTool``
 whose ``args_schema`` is the server's own JSON schema, so the model sees the
-real schema. The toolkit records which tools were called (real MCP names and
-success flags) and nothing else: never arguments, never results.
+real schema. The toolkit records which tools were called (real MCP names,
+success flags, the server URL and, for a call that raised instead of
+returning a result, the exception type) and nothing else: never arguments,
+never results.
+
+Bearer tokens are fetched per HTTP request (an :class:`httpx.Auth` that calls
+the token provider), so an episode outlives one token's lifetime as long as
+the provider refreshes (``World.token`` caches until shortly before expiry).
+Each distinct provider is also called once before connecting, so a token
+failure surfaces at connect time.
 
 The connections live in a background task owned by the toolkit, so ``close``
 may be called from any task (for example a pytest fixture's teardown).
@@ -15,13 +23,14 @@ import asyncio
 import json
 import re
 import warnings
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Literal, Self
 from urllib.parse import urlsplit
 
+import httpx
 from langchain_core.tools import BaseTool
 from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, PaginatedRequestParams, TextContent, Tool
@@ -39,6 +48,11 @@ _UNSAFE_NAME_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
 class ToolCallRecord:
     name: str  # the real MCP tool name
     ok: bool
+    # Where the call went, and the exception type when the call raised (an
+    # HTTP 401, a transport failure, a protocol error) instead of returning a
+    # result. Not part of equality, so ``ToolCallRecord(name, ok)`` compares.
+    url: str | None = field(default=None, compare=False)
+    failure: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -170,20 +184,21 @@ class McpToolkit:
                     name=name,
                     description=tool.description or "",
                     args_schema=dict(tool.inputSchema),
-                    mcp_call=self._caller(session, tool.name),
+                    mcp_call=self._caller(session, tool.name, url),
                 )
             )
 
     def _caller(
-        self, session: ClientSession, real_name: str
+        self, session: ClientSession, real_name: str, url: str
     ) -> Callable[[dict[str, Any]], Awaitable[str]]:
         async def call(arguments: dict[str, Any]) -> str:
             try:
                 result = await session.call_tool(real_name, arguments=arguments)
             except Exception as exc:  # noqa: BLE001 - shown to the model as text
-                self._calls.append(ToolCallRecord(real_name, False))
-                return f"Tool error: the call failed ({type(exc).__name__})"
-            self._calls.append(ToolCallRecord(real_name, not result.isError))
+                failure = type(_leaf(exc)).__name__
+                self._calls.append(ToolCallRecord(real_name, False, url, failure))
+                return f"Tool error: the call failed ({failure})"
+            self._calls.append(ToolCallRecord(real_name, not result.isError, url))
             return result_text(result)
 
         return call
@@ -208,14 +223,15 @@ class McpToolkit:
         await self.close()
 
 
-async def _resolve_tokens(
+async def _choose_providers(
     urls: Sequence[str],
     token_provider: TokenProvider | None,
     token_providers: Mapping[str, TokenProvider | None] | None = None,
-) -> dict[str, str | None]:
-    """The bearer token for each URL. A URL in ``token_providers`` uses that
-    provider (``None``: no token); any other URL uses ``token_provider``.
-    Each distinct provider is called once per connect."""
+) -> dict[str, TokenProvider | None]:
+    """The token provider for each URL. A URL in ``token_providers`` uses
+    that provider (``None``: no token); any other URL uses ``token_provider``.
+    Each distinct provider is called once here so that a token failure
+    surfaces before any connection is opened."""
     chosen: dict[str, TokenProvider | None] = {
         url: (
             token_providers[url]
@@ -225,19 +241,34 @@ async def _resolve_tokens(
         for url in urls
     }
     distinct = {id(p): p for p in chosen.values() if p is not None}
-    fetched = {key: await provider() for key, provider in distinct.items()}
-    return {
-        url: (fetched[id(provider)] if provider is not None else None)
-        for url, provider in chosen.items()
-    }
+    for provider in distinct.values():
+        await provider()
+    return chosen
 
 
-def _auth_headers(token: str | None) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"} if token else {}
+class BearerAuth(httpx.Auth):
+    """Sets ``Authorization: Bearer <token>`` on every request from the
+    provider (no header when it returns None), so a refreshed token is used
+    as soon as the provider hands it out."""
+
+    def __init__(self, provider: TokenProvider) -> None:
+        self._provider = provider
+
+    async def async_auth_flow(
+        self, request: httpx.Request
+    ) -> AsyncIterator[httpx.Request]:
+        token = await self._provider()
+        if token:
+            request.headers["Authorization"] = f"Bearer {token}"
+        yield request
+
+
+def _auth(provider: TokenProvider | None) -> httpx.Auth | None:
+    return BearerAuth(provider) if provider is not None else None
 
 
 async def _http_streams(
-    stack: AsyncExitStack, url: str, headers: dict[str, str]
+    stack: AsyncExitStack, url: str, auth: httpx.Auth | None
 ) -> tuple[Any, Any]:
     """Streamable HTTP streams: ``streamable_http_client`` in mcp>=1.24,
     the deprecated ``streamablehttp_client`` on older releases."""
@@ -247,16 +278,14 @@ async def _http_streams(
     if new_client is not None:
         from mcp.shared._httpx_utils import create_mcp_http_client
 
-        client = await stack.enter_async_context(
-            create_mcp_http_client(headers=headers)
-        )
+        client = await stack.enter_async_context(create_mcp_http_client(auth=auth))
         read, write, _ = await stack.enter_async_context(
             new_client(url, http_client=client)
         )
         return read, write
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
-        old = streamable_http.streamablehttp_client(url, headers=headers)
+        old = streamable_http.streamablehttp_client(url, auth=auth)
     read, write, _ = await stack.enter_async_context(old)
     return read, write
 
@@ -285,14 +314,14 @@ def _leaf(exc: BaseException) -> BaseException:
 
 
 async def _open(
-    stack: AsyncExitStack, url: str, headers: dict[str, str]
+    stack: AsyncExitStack, url: str, auth: httpx.Auth | None
 ) -> tuple[ClientSession, list[Tool]]:
     """Open, initialize and list one server. Its transport is torn down here
     on failure (so the error surfaces as one ConnectionError), and handed to
     ``stack`` on success."""
     try:
         async with AsyncExitStack() as url_stack:
-            read, write = await _http_streams(url_stack, url, headers)
+            read, write = await _http_streams(url_stack, url, auth)
             session = await url_stack.enter_async_context(
                 ClientSession(read, write, read_timeout_seconds=_READ_TIMEOUT)
             )
@@ -324,7 +353,7 @@ async def connect(
     raises ``ConnectionError`` naming the URL (never headers or tokens).
     """
     urls = [mcp_urls] if isinstance(mcp_urls, str) else list(mcp_urls)
-    tokens = await _resolve_tokens(urls, token_provider, token_providers)
+    providers = await _choose_providers(urls, token_provider, token_providers)
     toolkit = McpToolkit()
     ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
@@ -336,9 +365,7 @@ async def connect(
                 entries: list[tuple[str, ClientSession, Tool]] = []
                 owner: dict[str, str] = {}
                 for url in urls:
-                    session, listed = await _open(
-                        stack, url, _auth_headers(tokens[url])
-                    )
+                    session, listed = await _open(stack, url, _auth(providers[url]))
                     for tool in listed:
                         if tool.name in owner:
                             toolkit.collisions.append(

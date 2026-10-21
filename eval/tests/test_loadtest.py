@@ -71,14 +71,33 @@ def test_verdict_negative_overhead_is_inconclusive():
     assert make_result(_stats(80.0), _stats(20.0), {}).verdict == "inconclusive"
 
 
-def test_verdict_saturation_needs_more_than_one_worker():
-    slow_gateway = _stats(35.0, rps=30.0)  # 0.6x the direct throughput
-    one = make_result(_stats(20.0), slow_gateway, {}, concurrency=1)
-    assert not one.saturated and one.verdict == "yes"  # judged on its merits
-    many = make_result(_stats(20.0), slow_gateway, {}, concurrency=5)
-    assert many.saturated and many.verdict == "inconclusive"
-    ok = make_result(_stats(20.0), _stats(35.0, rps=45.0), {}, concurrency=5)
-    assert not ok.saturated and ok.verdict == "yes"  # 0.9x is above the 0.8 line
+def test_verdict_ignores_throughput_at_any_concurrency():
+    # No "saturated => inconclusive" rule: a slow gateway is judged on its p95.
+    slow_small = _stats(35.0, rps=30.0)  # 0.6x the direct throughput, +15 ms
+    slow_big = _stats(400.0, rps=10.0)  # +380 ms
+    for c in (1, 5, 50):
+        assert make_result(_stats(20.0), slow_small, {}, concurrency=c).verdict == "yes"
+        assert make_result(_stats(20.0), slow_big, {}, concurrency=c).verdict == "no"
+    assert not hasattr(make_result(_stats(20.0), slow_big, {}), "saturated")
+
+
+def test_contention_note_only_above_one_worker():
+    stats = LatencyStats(n=5, p50_ms=1.0, p95_ms=2.0, p99_ms=3.0, max_ms=4.0, errors=0)
+    note = "host contention included"
+    one = LoadResult(stats, stats, 0.0, 0.0, {}, concurrency=1)
+    many = LoadResult(stats, stats, 0.0, 0.0, {}, concurrency=50)
+    p1 = {"total": 5, "concurrency": 1, "warmup": 1}
+    p50 = {"total": 5, "concurrency": 50, "warmup": 1}
+    assert note not in loadtest.format_md(one, **p1)
+    md = loadtest.format_md(many, **p50)
+    assert (
+        "host contention included (gateway, servers, Keycloak and Postgres share "
+        "one host)" in md
+    )
+    assert json.loads(loadtest.format_json(many, **p50))["contention_note"].startswith(
+        note
+    )
+    assert json.loads(loadtest.format_json(one, **p1))["contention_note"] is None
 
 
 async def test_measure_records_concurrency():

@@ -94,7 +94,13 @@ async def test_toolkit_records_names_not_arguments(serve, make_server):
         await by_name(toolkit)["comms_send_message"].ainvoke(
             {"member_id": "M-900001", "body": "secret-argument-value"}
         )
-        assert [f.name for f in fields(ToolCallRecord)] == ["name", "ok"]
+        assert [f.name for f in fields(ToolCallRecord)] == [
+            "name",
+            "ok",
+            "url",
+            "failure",
+        ]
+        assert toolkit.calls[0].url == url and toolkit.calls[0].failure is None
         assert toolkit.calls == [ToolCallRecord("comms.send_message", True)]
         dumped = repr(toolkit.calls) + repr(vars(toolkit))
         assert "secret-argument-value" not in dumped
@@ -139,7 +145,7 @@ async def test_no_token_header_when_provider_none(serve, make_server):
     assert seen_auth and all(a is None for a in seen_auth)
 
 
-async def test_bearer_token_fetched_once_per_connect(serve, make_server):
+async def test_bearer_token_fetched_per_request(serve, make_server):
     url_a, seen_a = await serve(make_server("a"))
     url_b, seen_b = await serve(FastMCP("b"))
     calls = 0
@@ -147,13 +153,48 @@ async def test_bearer_token_fetched_once_per_connect(serve, make_server):
     async def provider() -> str:
         nonlocal calls
         calls += 1
-        return "tok-123"
+        return f"tok-{calls}"
 
     async with await connect([url_a, url_b], provider) as toolkit:
+        before = len(seen_a)
         await by_name(toolkit)["big"].ainvoke({})
-    assert calls == 1
-    assert seen_a and all(a == "Bearer tok-123" for a in seen_a)
-    assert seen_b and all(a == "Bearer tok-123" for a in seen_b)
+        await by_name(toolkit)["big"].ainvoke({})
+    # one pre-connect check, then one fetch per HTTP request
+    assert calls == 1 + len(seen_a) + len(seen_b)
+    assert all(a and a.startswith("Bearer tok-") for a in seen_a + seen_b)
+    # the tool calls carried tokens fetched after connect: a refresh is used
+    late = seen_a[before:]
+    assert late and len(set(late)) == len(late)
+    assert not set(late) & set(seen_a[:before])
+
+
+async def test_rejected_token_mid_episode_is_a_recorded_failure(
+    serve, make_server, monkeypatch
+):
+    from datetime import timedelta
+
+    from servicing_agent import mcp_tools
+
+    # mcp 1.x does not fail the pending request on an HTTP 401: it times out
+    monkeypatch.setattr(mcp_tools, "_READ_TIMEOUT", timedelta(seconds=2))
+    expired = False
+    url, _ = await serve(
+        make_server(), reject=lambda auth: expired and auth == "Bearer old"
+    )
+
+    async def provider() -> str:
+        return "old"
+
+    async with await connect(url, provider) as toolkit:
+        expired = True
+        out = await asyncio.wait_for(
+            by_name(toolkit)["core-read_get_claim_status"].ainvoke({"claim_id": "C1"}),
+            timeout=60,
+        )
+        assert out.startswith("Tool error: the call failed (")
+        (record,) = toolkit.calls
+        assert record.ok is False and record.failure is not None
+        assert record.url == url
 
 
 async def test_connect_failure_closes_and_raises(serve, make_server):
@@ -249,10 +290,10 @@ async def test_per_url_token_providers_take_precedence(serve, make_server):
     assert seen_a and all(a == "Bearer tok-a" for a in seen_a)
     assert seen_b and all(a is None for a in seen_b)  # explicit None: no header
     assert seen_c and all(a == "Bearer fallback" for a in seen_c)
-    assert sorted(fetched) == ["fallback", "tok-a"]  # each provider once
+    assert set(fetched) == {"fallback", "tok-a"}  # checked once, then per request
 
 
-async def test_shared_provider_in_mapping_fetched_once(serve, make_server):
+async def test_shared_provider_in_mapping_checked_once_at_connect(serve, make_server):
     url_a, seen_a = await serve(make_server("a"))
     url_b, seen_b = await serve(FastMCP("b"))
     calls = 0
@@ -266,6 +307,6 @@ async def test_shared_provider_in_mapping_fetched_once(serve, make_server):
         [url_a, url_b], None, token_providers={url_a: provider, url_b: provider}
     ):
         pass
-    assert calls == 1
+    assert calls == 1 + len(seen_a) + len(seen_b)  # one check + per request
     assert seen_a and all(a == "Bearer tok-shared" for a in seen_a)
     assert seen_b and all(a == "Bearer tok-shared" for a in seen_b)

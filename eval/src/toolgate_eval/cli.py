@@ -99,6 +99,10 @@ def _run(args: argparse.Namespace) -> int:
     except (ConfigError, runner.RunnerError, WorldError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    except ValueError as exc:  # pydantic ValidationError included
+        # The type only: a validation message can echo input values.
+        print(f"error: {type(exc).__name__}", file=sys.stderr)
+        return 2
     print(
         f"ran {summary.ran}, skipped {summary.skipped}, errors {summary.errors}, "
         f"leaked {summary.leaked}, stopped {summary.stopped or 'no'}"
