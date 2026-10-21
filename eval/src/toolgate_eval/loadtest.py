@@ -13,7 +13,7 @@ warm-up calls. The two sides run in alternating blocks so drift (caches, CPU
 boost, the OS) hits both equally. A failed call is counted in ``errors`` by
 exception type and never enters a latency list. ``overhead = gateway -
 direct`` for p50 and p95; whether p95 overhead is under the 30 ms ship-gate
-target is reported (:attr:`LoadResult.p95_under_target`), never asserted.
+target is reported (:attr:`LoadResult.verdict`: yes / no / inconclusive), never asserted.
 
 Gateway and servers share one host: the numbers exclude real network latency
 and include CPU contention between the load generator, the gateway and the
@@ -40,13 +40,14 @@ import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from toolgate_eval.world import World, WorldSettings
+from toolgate_eval.world import World, WorldError, WorldSettings
 
 DIRECT_URL = "http://127.0.0.1:8101/mcp"
 GATEWAY_URL = "http://127.0.0.1:8200/mcp"
 DIRECT_TOOL = "get_claim_status"
 GATEWAY_TOOL = "core-read.get_claim_status"
 P95_TARGET_MS = 30.0
+SATURATION_RATIO = 0.8
 DEFAULT_BLOCK = 250
 CALL_TIMEOUT_S = 30.0
 
@@ -75,10 +76,35 @@ class LoadResult:
     overhead_p50_ms: float
     overhead_p95_ms: float
     errors: dict[str, int] = field(default_factory=dict)
+    concurrency: int = 1
 
     @property
-    def p95_under_target(self) -> bool:
-        return self.overhead_p95_ms < P95_TARGET_MS
+    def saturated(self) -> bool:
+        """True when the run queued behind a shared bottleneck.
+
+        In a closed loop of c workers, c = throughput x mean latency holds
+        by identity (Little's law), so comparing c / throughput with the p50
+        cannot detect queueing. What can: at c > 1 the gateway path serving
+        under ``SATURATION_RATIO`` of the direct path's calls per second means
+        the extra latency is workers waiting behind each other (a
+        single-process server or shared CPU), not per-call cost, so the p95
+        difference is not an overhead. Only valid at c > 1: with one worker a
+        throughput drop is the per-call overhead itself.
+        """
+        d, g = self.direct.throughput_rps, self.gateway.throughput_rps
+        return self.concurrency > 1 and d > 0 and g < SATURATION_RATIO * d
+
+    @property
+    def verdict(self) -> str:
+        """Is p95 overhead under the 30 ms target: ``yes``, ``no`` or
+        ``inconclusive`` (a side has no samples or any errors, the overhead is
+        negative, or the run is queue-saturated)."""
+        sides = (self.direct, self.gateway)
+        if any(x.n == 0 or x.errors > 0 for x in sides):
+            return "inconclusive"
+        if self.overhead_p95_ms < 0 or self.saturated:
+            return "inconclusive"
+        return "yes" if self.overhead_p95_ms < P95_TARGET_MS else "no"
 
 
 def percentile(samples_ms: Sequence[float], q: float) -> float:
@@ -108,7 +134,10 @@ def make_stats(
 
 
 def make_result(
-    direct: LatencyStats, gateway: LatencyStats, errors: dict[str, int]
+    direct: LatencyStats,
+    gateway: LatencyStats,
+    errors: dict[str, int],
+    concurrency: int = 1,
 ) -> LoadResult:
     return LoadResult(
         direct=direct,
@@ -116,6 +145,7 @@ def make_result(
         overhead_p50_ms=gateway.p50_ms - direct.p50_ms,
         overhead_p95_ms=gateway.p95_ms - direct.p95_ms,
         errors=dict(errors),
+        concurrency=concurrency,
     )
 
 
@@ -168,7 +198,12 @@ async def measure(
     per side in alternating blocks: direct, gateway, direct, gateway, ..."""
     discard = _Side()
     for calls in (direct_calls, gateway_calls):
+        before = len(discard.samples_ms)
         await _run_block(calls, warmup, discard)
+        if warmup > 0 and len(discard.samples_ms) == before:
+            raise LoadTestError(
+                f"every warm-up call failed ({', '.join(sorted(discard.errors))})"
+            )
     direct, gateway = _Side(), _Side()
     for size in block_sizes(total, block):
         await _run_block(direct_calls, size, direct)
@@ -182,12 +217,14 @@ async def measure(
         make_stats(direct.samples_ms, sum(direct.errors.values()), direct.wall_s),
         make_stats(gateway.samples_ms, sum(gateway.errors.values()), gateway.wall_s),
         errors,
+        concurrency=min(len(direct_calls), len(gateway_calls)),
     )
 
 
 class _BearerAuth(httpx.Auth):
     """Bearer token fetched per request from a cached provider, so a long run
-    outlives one token's lifetime without a re-login stall."""
+    outlives one token's lifetime. A refresh (one Keycloak round trip, rare)
+    lands inside whichever timed sample is in flight; at p95 it is noise."""
 
     def __init__(self, provider: Callable[[], Awaitable[str]]) -> None:
         self._provider = provider
@@ -243,37 +280,54 @@ async def run_loadtest(
         raise LoadTestError("total and concurrency must be >= 1, warmup >= 0")
     settings = settings or WorldSettings.from_env()
     try:
-        async with World(settings) as world, AsyncExitStack() as stack:
+        return await _run_live(settings, total, concurrency, warmup, block)
+    except (LoadTestError, WorldError):
+        raise  # messages are fixed text, no secrets
+    except Exception as exc:  # noqa: BLE001 - McpError, ExceptionGroup, httpx, OS: type names only (may echo headers)
+        if isinstance(exc, ExceptionGroup):
+            names = sorted(_leaf_names(exc))
+            label = f"{type(exc).__name__}: {', '.join(names)}"
+        else:
+            label = type(exc).__name__
+        raise LoadTestError(f"stack unreachable or call failed ({label})") from None
 
-            async def dev_token() -> str:
-                return await world.token("dev-tester")
 
-            async def servicing_token() -> str:
-                return await world.token("servicing")
+def _leaf_names(exc: BaseException) -> set[str]:
+    if isinstance(exc, BaseExceptionGroup):
+        return {n for e in exc.exceptions for n in _leaf_names(e)}
+    return {type(exc).__name__}
 
-            await dev_token()
-            await servicing_token()
-            direct_sessions = [
-                await _open_session(stack, DIRECT_URL, dev_token)
-                for _ in range(concurrency)
-            ]
-            gateway_sessions = [
-                await _open_session(stack, GATEWAY_URL, servicing_token)
-                for _ in range(concurrency)
-            ]
-            claim_id = await _canary_claim(direct_sessions[0], settings.member_id)
-            args = {"claim_id": claim_id}
-            return await measure(
-                [_caller(s, DIRECT_TOOL, args) for s in direct_sessions],
-                [_caller(s, GATEWAY_TOOL, args) for s in gateway_sessions],
-                total=total,
-                warmup=warmup,
-                block=block,
-            )
-    except (httpx.HTTPError, OSError) as exc:
-        raise LoadTestError(
-            f"stack unreachable or call setup failed ({type(exc).__name__})"
-        ) from None
+
+async def _run_live(
+    settings: WorldSettings, total: int, concurrency: int, warmup: int, block: int
+) -> LoadResult:
+    async with World(settings) as world, AsyncExitStack() as stack:
+
+        async def dev_token() -> str:
+            return await world.token("dev-tester")
+
+        async def servicing_token() -> str:
+            return await world.token("servicing")
+
+        await dev_token()
+        await servicing_token()
+        direct_sessions = [
+            await _open_session(stack, DIRECT_URL, dev_token)
+            for _ in range(concurrency)
+        ]
+        gateway_sessions = [
+            await _open_session(stack, GATEWAY_URL, servicing_token)
+            for _ in range(concurrency)
+        ]
+        claim_id = await _canary_claim(direct_sessions[0], settings.member_id)
+        args = {"claim_id": claim_id}
+        return await measure(
+            [_caller(s, DIRECT_TOOL, args) for s in direct_sessions],
+            [_caller(s, GATEWAY_TOOL, args) for s in gateway_sessions],
+            total=total,
+            warmup=warmup,
+            block=block,
+        )
 
 
 def machine_info() -> dict[str, Any]:
@@ -297,7 +351,7 @@ def to_dict(
         "gateway": asdict(result.gateway),
         "overhead_p50_ms": result.overhead_p50_ms,
         "overhead_p95_ms": result.overhead_p95_ms,
-        "p95_overhead_under_30ms": result.p95_under_target,
+        "p95_overhead_under_30ms": result.verdict,
         "errors": result.errors,
     }
 
@@ -313,7 +367,7 @@ def format_md(result: LoadResult, *, total: int, concurrency: int, warmup: int) 
         f"| {s.max_ms:.1f} | {s.throughput_rps:.0f} | {s.errors} |"
         for name, s in (("direct", result.direct), ("gateway", result.gateway))
     ]
-    verdict = "yes" if result.p95_under_target else "no"
+    verdict = result.verdict
     lines = [
         "**Gateway overhead load test**",
         "",

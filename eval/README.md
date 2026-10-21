@@ -366,30 +366,46 @@ machine-dependent). Gateway, MCP servers, Postgres, Keycloak and the load
 generator all share one host: there is no real network latency and CPU
 contention is included.
 
-Recorded 2026-10-21, Windows 11 (AMD64), 16 CPUs, Docker Desktop, Python
-3.12.10, commit of this change. Times in ms, 0 errors in every run.
+The verdict line is three-valued: `yes`, `no` or `inconclusive`. It is
+inconclusive when a side has no samples or any error, when the p95 overhead is
+negative, or when the run is queue-saturated (concurrency > 1 and the gateway
+serves under 0.8x the direct path's calls per second: the extra latency is then
+workers waiting behind a shared bottleneck, not per-call cost). The command
+exits 1 when either side completed no calls.
 
-| Run (calls per side) | Path | p50 | p95 | p99 | max | calls/s | Overhead p50 / p95 | p95 overhead < 30 ms |
+Recorded 2026-10-21 (re-run for the verdict labels), Windows 11 (AMD64), 16
+CPUs, Docker Desktop, Python 3.12.10, this commit. Times in ms, warm-up 200
+calls per side in every run, 0 errors.
+
+| Run (calls x workers) | Path | p50 | p95 | p99 | max | calls/s | Overhead p50 / p95 | p95 overhead < 30 ms |
 |---|---|---|---|---|---|---|---|---|
-| 5000 x 50 (as specified) | direct | 662.8 | 1349.7 | 1823.2 | 2807.0 | 63 | | |
-| | gateway | 1042.6 | 1258.0 | 1450.0 | 1799.6 | 47 | 379.8 / -91.7 | not meaningful (saturated) |
-| 1000 x 5 | direct | 91.2 | 125.1 | 143.6 | 193.8 | 53 | | |
-| | gateway | 124.3 | 176.2 | 209.5 | 242.6 | 39 | 33.1 / 51.1 | no |
-| 1000 x 1 | direct | 28.9 | 31.1 | 33.4 | 64.2 | 34 | | |
-| | gateway | 46.1 | 50.2 | 61.4 | 90.4 | 21 | 17.1 / 19.1 | yes |
+| 5000 x 50 | direct | 783.6 | 1695.4 | 2769.8 | 5723.2 | 52 | | |
+| | gateway | 1145.9 | 1864.7 | 2353.9 | 3736.5 | 39 | 362.3 / 169.3 | inconclusive (saturated) |
+| 1000 x 5 | direct | 127.7 | 186.7 | 245.6 | 309.8 | 38 | | |
+| | gateway | 169.8 | 255.7 | 300.2 | 362.9 | 28 | 42.1 / 68.9 | inconclusive (saturated) |
+| 1000 x 1 | direct | 36.7 | 42.3 | 46.0 | 89.7 | 27 | | |
+| | gateway | 57.4 | 67.5 | 78.8 | 117.0 | 17 | 20.8 / 25.3 | yes |
+
+Reproduce (the first row is the specified run):
+
+```
+uv run toolgate-eval loadtest --total 5000 --concurrency 50 --warmup 200
+uv run toolgate-eval loadtest --total 1000 --concurrency 5 --warmup 200
+uv run toolgate-eval loadtest --total 1000 --concurrency 1 --warmup 200
+```
 
 How to read this:
 
-- At 50 workers both paths are saturated on this one machine (63 and 47
-  calls/s): a closed loop of 50 in flight turns latency into queueing time
-  (roughly 50 / throughput), so the p95 difference (-91.7 ms) is an artefact
-  of the tail, not a measure of gateway cost. The "yes" the tool prints for
-  that row is not evidence that the target is met.
-- The p50 gap at saturation (380 ms) is the throughput ratio, i.e. the
-  gateway serves about 25% fewer calls per second than a direct server here.
-- Per-call overhead is best read at low concurrency: about 17 ms at p50 and
-  19 ms at p95 with one caller (under the 30 ms target), growing to 33 / 51 ms
-  with five concurrent callers on this host.
-- The direct path itself costs about 29 ms per call here (MCP server ->
+- Only the one-worker run measures per-call overhead: about 21 ms at p50 and
+  25 ms at p95, under the 30 ms target (an earlier run of the same command
+  gave 17 / 19 ms; this machine's timings drift by a few ms between runs).
+- At 5 and 50 workers both paths are throughput-bound on this one host
+  (single-process servers, shared CPU), so latency is queueing time and the
+  gateway-direct difference mixes per-call cost with waiting. The verdict is
+  inconclusive, not "no"; an earlier 50-worker run even produced a negative
+  p95 difference for the same reason.
+- The direct path itself costs about 30-37 ms per call here (MCP server ->
   mock API -> Postgres, all in Docker on Windows), so absolute numbers are
   dominated by this setup. Re-run on the machine that matters.
+- Timed samples include the rare Keycloak token refresh when a cached token
+  expires; at p95 it is noise.

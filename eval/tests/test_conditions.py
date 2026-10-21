@@ -474,7 +474,14 @@ async def test_conditions_clean_up_ports_and_tasks(world: World):
     await direct.close()
 
     await asyncio.sleep(0.2)
-    leftover = {t for t in asyncio.all_tasks() - before if t is not current}
+    leftover = {
+        t
+        for t in asyncio.all_tasks() - before
+        if t is not current
+        # sse_starlette's single per-loop shutdown watcher is a library
+        # singleton, not a per-server task; it ends with the loop.
+        and t.get_coro().__qualname__ != "_shutdown_watcher"  # type: ignore[union-attr]
+    }
     assert not leftover, sorted(t.get_name() for t in leftover)
     assert not _port_open(gateway)
     assert not _port_open(attacker_endpoint)  # owned by the condition: stopped

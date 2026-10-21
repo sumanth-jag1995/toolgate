@@ -151,6 +151,9 @@ def _loadtest(args: argparse.Namespace) -> int:
         return 1
     fmt = loadtest.format_json if args.format == "json" else loadtest.format_md
     print(fmt(result, **params))
+    if result.direct.n == 0 or result.gateway.n == 0:
+        print("error: a side completed no calls", file=sys.stderr)
+        return 1
     return 0
 
 
