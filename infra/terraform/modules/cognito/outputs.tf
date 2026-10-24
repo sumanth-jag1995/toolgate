@@ -13,3 +13,11 @@ output "app_client_ids" {
 output "client_secret_arns" {
   value = { for k, s in aws_secretsmanager_secret.client : k => s.arn }
 }
+
+output "token_url" {
+  value = "https://${aws_cognito_user_pool_domain.this.domain}.auth.${var.region}.amazoncognito.com/oauth2/token"
+}
+
+output "jwks_url" {
+  value = "https://cognito-idp.${var.region}.amazonaws.com/${aws_cognito_user_pool.this.id}/.well-known/jwks.json"
+}

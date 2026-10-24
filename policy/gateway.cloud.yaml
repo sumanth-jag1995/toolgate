@@ -1,0 +1,9 @@
+# Downstreams for the AWS deployment: Cloud Map names in toolgate.local
+# (infra/terraform/modules/ecs). Same server_ids as gateway.yaml.
+downstreams:
+  - server_id: core-read
+    url: http://core-read.toolgate.local:8101/mcp
+  - server_id: core-write
+    url: http://core-write.toolgate.local:8102/mcp
+  - server_id: comms
+    url: http://comms.toolgate.local:8103/mcp

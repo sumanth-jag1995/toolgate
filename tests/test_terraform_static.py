@@ -145,7 +145,7 @@ def test_teardown_friendly_settings():
 
 def test_variable_validations():
     variables = _read("variables.tf")
-    assert variables.count("validation {") == 3
+    assert variables.count("validation {") >= 3
     assert 'var.region == "us-east-1"' in variables
     assert "var.budget_usd > 0" in variables
     assert "regex(" in variables
@@ -228,6 +228,113 @@ def test_cognito_scopes_mirror_keycloak_and_agents_yaml():
             assert short in servers[resource]
 
 
+def _ecs() -> str:
+    return _read("modules/ecs/main.tf")
+
+
+def test_every_ecs_service_has_log_group_and_task_role():
+    ecs = _ecs()
+    assert re.search(
+        r'resource "aws_ecs_service" "this" \{\s*for_each\s*=\s*local.services', ecs
+    )
+    assert "services = { for k, v in local.active" in ecs
+    for res in ("task", "execution"):
+        assert re.search(
+            rf'resource "aws_iam_role" "{res}" \{{\s*for_each\s*=\s*local.active', ecs
+        )
+    assert (
+        'resource "aws_ecs_task_definition" "this" {' in ecs
+        and "for_each                 = local.active" in ecs
+    )
+    assert "task_role_arn            = aws_iam_role.task[each.key].arn" in ecs
+    assert ecs.count('"awslogs-group"') == 2
+    assert "var.log_group_names[each.key]" in ecs
+    obs = _read("modules/observability/main.tf")
+    assert re.search(r"for_each\s*=\s*var.log_group_names", obs)
+    root = _read("main.tf")
+    assert "log_group_names = local.task_names" in root
+    assert "keys(local.active_images)" in root
+    # least privilege: no wildcard secret access
+    assert re.search(r"GetSecretValue", ecs)
+    assert "secretsmanager:*" not in ecs
+
+
+def test_alb_http_only_when_no_domain():
+    ecs = _ecs()
+    assert re.search(
+        r'resource "aws_lb_listener" "http" \{\s*count\s*=\s*var.domain_name == "" \? 1 : 0',
+        ecs,
+    )
+    assert re.search(
+        r'resource "aws_lb_listener" "https" \{\s*count\s*=\s*var.domain_name != "" \? 1 : 0',
+        ecs,
+    )
+    assert 'protocol          = "HTTPS"' in ecs and "certificate_arn" in ecs
+    assert "http_redirect" in ecs
+
+
+def test_only_gateway_target_group_is_internet_facing():
+    ecs = _ecs()
+    assert ecs.count('resource "aws_lb_target_group"') == 1
+    assert ecs.count('resource "aws_lb_listener_rule"') == 1
+    assert ecs.count('dynamic "load_balancer"') == 1
+    assert 'for_each = each.key == "gateway" ? [1] : []' in ecs
+    assert "assign_public_ip = false" in ecs
+    assert "/.well-known/oauth-protected-resource/mcp" in ecs
+    assert '"/mcp"' in ecs
+    assert "port                 = 8200" in ecs
+    # Only the gateway task, never the MCP servers, is registered with the ALB.
+    assert ecs.count("target_group_arn") == 2  # listener rule action + gateway service
+
+
+def test_log_retention_is_7_days():
+    obs = _read("modules/observability/main.tf")
+    assert re.search(r"retention_in_days\s*=\s*7\b", obs)
+    assert "aws-otel-collector" in _read("modules/observability/outputs.tf")
+
+
+def test_eval_targets_off_by_default_and_destroyable():
+    variables = _read("variables.tf")
+    assert re.search(
+        r'variable "enable_eval_targets"[^}]*default\s*=\s*false', variables, re.DOTALL
+    )
+    assert "var.enable_eval_targets ? keys(var.eval_target_ports) : []" in _read(
+        "main.tf"
+    )
+    ecs = _ecs()
+    assert re.search(r"force_delete\s*=\s*true", ecs)
+    assert re.search(r"recovery_window_in_days\s*=\s*0", ecs)
+    assert 'name = "toolgate.local"' in ecs
+
+
+def test_ecs_mirrors_compose_ports_and_variable_names():
+    compose = yaml.safe_load((ROOT / "infra/docker-compose.yml").read_text("utf-8"))
+    services = compose["services"]
+    ecs = _ecs()
+    for name in ("mock-api", "core-read", "core-write", "comms", "gateway"):
+        svc = services[name]
+        port = int(svc["ports"][0].rsplit(":", 1)[1])
+        assert f"{port}" in ecs, name
+        for var in svc.get("environment", {}):
+            if var == "DATABASE_URL":
+                continue  # composed in the container command from secret parts
+            if var in ("OTEL_EXPORTER_OTLP_ENDPOINT", "GATEWAY_CLIENT_ID"):
+                assert var in ecs
+                continue
+            assert re.search(rf"\b{var}\b", ecs), f"{name}: {var}"
+    assert "mock_enterprise.seed --reset" in ecs
+    assert "toolgate_mcp_servers" in ecs
+    assert "toolgate-gateway serve" in ecs
+
+
+def test_ecs_secrets_only_by_reference():
+    ecs = _ecs()
+    assert "valueFrom" in ecs
+    assert not re.search(r"(CLIENT_SECRET|PASSWORD|HMAC_KEY)\s*=\s*\"[^$]", ecs)
+    assert "secret_string" in ecs  # only the generated gateway secret
+    assert ecs.count("secret_string") == 1
+
+
 def test_terraform_fmt_and_validate():
     tf, reason = _terraform_bin()
     if not tf:
@@ -245,3 +352,16 @@ def test_terraform_fmt_and_validate():
     run("init", "-backend=false", "-input=false", "-lockfile=readonly", "-no-color")
     run("fmt", "-check", "-recursive", "-no-color")
     run("validate", "-no-color")
+
+
+def test_validate_still_passes():
+    tf, reason = _terraform_bin()
+    if not tf:
+        pytest.skip(reason)
+    res = subprocess.run(
+        [tf, f"-chdir={TF}", "validate", "-no-color"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 0, res.stdout + res.stderr

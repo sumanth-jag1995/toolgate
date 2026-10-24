@@ -16,3 +16,13 @@ Approximate running cost (us-east-1, check current AWS pricing before relying on
 
 The budget alarm (default $25/month) is account-wide. Tear the stack down when
 not in use.
+
+## Services
+
+`images` maps a service name to its ECR image URI; a Fargate service is created
+only for names listed (ECR repositories exist for all enabled names so images
+can be pushed first). `evil-server` and `sink` need `enable_eval_targets = true`
+and their own images. Images must bake `/policy` (lockfile, `agents.yaml`,
+`gateway.cloud.yaml`). Tasks reach each other at `<name>.toolgate.local`. Run the
+`gateway-migrate` task definition once (`aws ecs run-task`) before the gateway.
+Without `domain_name` the ALB serves plain HTTP on port 80 (demo-grade).

@@ -45,3 +45,23 @@ output "client_secret_arns" {
 output "budget_name" {
   value = module.budget.budget_name
 }
+
+output "alb_dns_name" {
+  value = module.ecs.alb_dns_name
+}
+
+output "ecs_cluster_name" {
+  value = module.ecs.cluster_name
+}
+
+output "ecr_repository_urls" {
+  value = module.ecs.ecr_repository_urls
+}
+
+output "service_names" {
+  value = module.ecs.service_names
+}
+
+output "gateway_migrate_task_definition_arn" {
+  value = module.ecs.gateway_migrate_task_definition_arn
+}
