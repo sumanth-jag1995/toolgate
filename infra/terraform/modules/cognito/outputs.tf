@@ -7,7 +7,7 @@ output "issuer_url" {
 }
 
 output "app_client_ids" {
-  value = { for k, c in aws_cognito_user_pool_client.agent : k => c.id }
+  value = { for k, c in aws_cognito_user_pool_client.this : k => c.id }
 }
 
 output "client_secret_arns" {

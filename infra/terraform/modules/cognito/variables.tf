@@ -2,43 +2,43 @@ variable "region" {
   type = string
 }
 
-variable "resource_server_id" {
-  description = "Audience of the downstream tools (Keycloak audience mock-enterprise)."
-  type        = string
-  default     = "mock-enterprise"
-}
-
-# Mirrors the client scopes in infra/keycloak/toolgate-realm.template.json.
-variable "scopes" {
-  type = map(string)
+# Resource servers mirror the Keycloak audiences. toolgate-gateway, core-read,
+# core-write and comms each expose one `invoke` scope; mock-enterprise carries
+# the eight client scopes from infra/keycloak/toolgate-realm.template.json.
+variable "resource_servers" {
+  type = map(list(string))
   default = {
-    "members:read"  = "Read members"
-    "policies:read" = "Read policies"
-    "claims:read"   = "Read claims"
-    "payments:read" = "Read payments"
-    "comms:read"    = "Read communications"
-    "claims:write"  = "Write claims"
-    "members:write" = "Write members"
-    "comms:write"   = "Send communications"
+    "toolgate-gateway" = ["invoke"]
+    "core-read"        = ["invoke"]
+    "core-write"       = ["invoke"]
+    "comms"            = ["invoke"]
+    "mock-enterprise" = [
+      "members:read", "policies:read", "claims:read", "payments:read", "comms:read",
+      "claims:write", "members:write", "comms:write",
+    ]
   }
 }
 
-# Agent clients from the Keycloak realm. Scopes follow policy/agents.yaml:
-# core-read.* -> the five :read scopes, core-write.* -> claims:write and
-# members:write, comms.* -> comms:write.
-variable "agents" {
+# App clients (client_credentials only), as `resource-server/scope`.
+# - Agents get only toolgate-gateway/invoke: per-agent tool authorization is
+#   enforced by the gateway policy (policy/agents.yaml), not by the IdP.
+# - gateway calls the downstream servers (Keycloak audiences core-read,
+#   core-write, comms).
+# - Server clients carry exactly the mock-enterprise scopes of their Keycloak
+#   clients.
+variable "clients" {
   type = map(list(string))
   default = {
-    "servicing" = [
-      "members:read", "policies:read", "claims:read", "payments:read", "comms:read",
-      "claims:write", "members:write", "comms:write",
+    "servicing"     = ["toolgate-gateway/invoke"]
+    "claims-intake" = ["toolgate-gateway/invoke"]
+    "fraud-triage"  = ["toolgate-gateway/invoke"]
+    "gateway"       = ["core-read/invoke", "core-write/invoke", "comms/invoke"]
+    "core-read" = [
+      "mock-enterprise/members:read", "mock-enterprise/policies:read",
+      "mock-enterprise/claims:read", "mock-enterprise/payments:read",
+      "mock-enterprise/comms:read",
     ]
-    "claims-intake" = [
-      "members:read", "policies:read", "claims:read", "payments:read", "comms:read",
-      "claims:write", "members:write", "comms:write",
-    ]
-    "fraud-triage" = [
-      "members:read", "policies:read", "claims:read", "payments:read", "comms:read",
-    ]
+    "core-write" = ["mock-enterprise/claims:write", "mock-enterprise/members:write"]
+    "comms"      = ["mock-enterprise/comms:write"]
   }
 }

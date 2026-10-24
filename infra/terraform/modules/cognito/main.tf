@@ -1,5 +1,9 @@
 resource "aws_cognito_user_pool" "this" {
   name = "toolgate"
+
+  admin_create_user_config {
+    allow_admin_create_user_only = true
+  }
 }
 
 resource "random_id" "domain" {
@@ -11,49 +15,57 @@ resource "aws_cognito_user_pool_domain" "this" {
   user_pool_id = aws_cognito_user_pool.this.id
 }
 
-resource "aws_cognito_resource_server" "tools" {
-  identifier   = var.resource_server_id
-  name         = var.resource_server_id
+resource "aws_cognito_resource_server" "this" {
+  for_each     = var.resource_servers
+  identifier   = each.key
+  name         = each.key
   user_pool_id = aws_cognito_user_pool.this.id
 
   dynamic "scope" {
-    for_each = var.scopes
+    for_each = each.value
     content {
-      scope_name        = scope.key
-      scope_description = scope.value
+      scope_name        = scope.value
+      scope_description = "${each.key} ${scope.value}"
     }
   }
 }
 
-resource "aws_cognito_user_pool_client" "agent" {
-  for_each = var.agents
-
+# NOTE: Cognito access tokens carry `client_id` and `scope` but no `aud` or
+# `azp`. The MCP servers' audience check therefore needs an IdP-specific mode
+# in F2 (not changed in F1).
+resource "aws_cognito_user_pool_client" "this" {
+  for_each     = var.clients
   name         = each.key
   user_pool_id = aws_cognito_user_pool.this.id
 
   generate_secret                      = true
+  explicit_auth_flows                  = ["ALLOW_REFRESH_TOKEN_AUTH"]
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_flows                  = ["client_credentials"]
-  allowed_oauth_scopes                 = [for s in each.value : "${aws_cognito_resource_server.tools.identifier}/${s}"]
+  allowed_oauth_scopes                 = each.value
   supported_identity_providers         = ["COGNITO"]
   access_token_validity                = 10
+
   token_validity_units {
     access_token = "minutes"
   }
+
+  depends_on = [aws_cognito_resource_server.this]
 }
 
-# Client secrets live in Secrets Manager only; they are never output.
+# Client secrets are stored in Secrets Manager only and are never output.
+# They also sit in plaintext in the local Terraform state (git-ignored).
 resource "aws_secretsmanager_secret" "client" {
-  for_each                = var.agents
+  for_each                = var.clients
   name_prefix             = "toolgate/cognito-${each.key}-"
   recovery_window_in_days = 0
 }
 
 resource "aws_secretsmanager_secret_version" "client" {
-  for_each  = var.agents
+  for_each  = var.clients
   secret_id = aws_secretsmanager_secret.client[each.key].id
   secret_string = jsonencode({
-    client_id     = aws_cognito_user_pool_client.agent[each.key].id
-    client_secret = aws_cognito_user_pool_client.agent[each.key].client_secret
+    client_id     = aws_cognito_user_pool_client.this[each.key].id
+    client_secret = aws_cognito_user_pool_client.this[each.key].client_secret
   })
 }
