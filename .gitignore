@@ -191,3 +191,6 @@ infra/keycloak/generated/
 
 # Eval results-file locks (toolgate-eval run)
 *.jsonl.lock
+
+# Eval run outputs (scratch and in-progress runs; commit final result files deliberately with `git add -f`)
+eval/results/
