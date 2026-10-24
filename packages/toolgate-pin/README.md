@@ -12,7 +12,7 @@ Requires Python 3.11 or newer. Core dependencies are `mcp` and `rfc8785`.
 $ uvx toolgate-pin demo
 ```
 
-Until the package is published on PyPI, point `uvx` at a wheel or the git repository instead: `uvx --from <path-to-wheel or git URL> toolgate-pin demo`.
+To try an unreleased build instead, point `uvx` at a wheel or the git repository: `uvx --from <path-to-wheel or git URL> toolgate-pin demo`.
 
 No keys, Docker or database. The command starts a bundled MCP server in-process, pins its four tools, then changes one tool's description to carry a hidden instruction written in Unicode tag characters. Real output (long lines trimmed with `…`):
 

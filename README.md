@@ -213,7 +213,7 @@ Three layers, each blocking:
 2. **CI on every push and PR:** `gitleaks detect` over the full git history ([ci.yml](.github/workflows/ci.yml)).
 3. **Release workflow, before upload:** the sdist and wheel are unpacked, scanned with `gitleaks detect --no-git`, and their file list must equal an expected manifest. Upload to PyPI uses trusted publishing (OIDC), so no PyPI token is stored anywhere ([release.yml](.github/workflows/release.yml)).
 
-Dev secrets are generated into a gitignored `.env`; the committed Keycloak realm holds placeholders only. `toolgate-pin` 0.1.0 has not been published yet: the release workflow exists but has not been triggered.
+Dev secrets are generated into a gitignored `.env`; the committed Keycloak realm holds placeholders only. `toolgate-pin` 0.1.0 is published on [PyPI](https://pypi.org/project/toolgate-pin/) through that workflow (`uvx toolgate-pin demo`).
 
 ## Limits
 
