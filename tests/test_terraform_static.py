@@ -523,9 +523,9 @@ def test_every_service_task_sets_idp_cognito():
     mock = _spec_block(ecs, "mock-api")
     mcp = _mcp_spec_text(ecs)
     assert re.search(r'GATEWAY_IDP\s*=\s*"cognito"', gateway)
-    assert re.search(r"(?<![A-Z_])IDPs*=s*\"cognito\"", mock)
+    assert re.search(r'(?<![A-Z_])IDP\s*=\s*"cognito"', mock)
     assert re.search(r'SCOPE_PREFIX\s*=\s*"mock-enterprise/"', mock)
-    assert re.search(r"(?<![A-Z_])IDPs*=s*\"cognito\"", mcp)
+    assert re.search(r'(?<![A-Z_])IDP\s*=\s*"cognito"', mcp)
     assert "TOKEN_SCOPE = var.server_token_scopes[n]" in mcp
     # No task is left in the default (keycloak) mode.
     assert ecs.count('"cognito"') == 3
