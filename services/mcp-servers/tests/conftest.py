@@ -284,3 +284,40 @@ async def canary_in_review_claim_id(db_session):
             )
         )
     ).one()
+
+
+@pytest.fixture(scope="session")
+def make_cognito_token(rsa_key):
+    """Returns a raw RS256 JWT string shaped like a Cognito access token."""
+
+    def _make(
+        scopes=("core-read/invoke",),
+        *,
+        token_use="access",
+        client_id="cog-client",
+        extra=None,
+    ):
+        now = int(time.time())
+        claims = {
+            "iss": ISSUER,
+            "client_id": client_id,
+            "token_use": token_use,
+            "scope": " ".join(scopes),
+            "iat": now,
+            "exp": now + 300,
+        }
+        claims.update(extra or {})
+        return jwt.encode(claims, rsa_key, algorithm="RS256", headers={"kid": "test"})
+
+    return _make
+
+
+@pytest.fixture
+def cognito_verifier(rsa_key):
+    return JwtTokenVerifier(
+        ISSUER,
+        "core-read",
+        JWKS_URL,
+        jwk_client=StubJWKClient(rsa_key.public_key()),
+        mode="cognito",
+    )

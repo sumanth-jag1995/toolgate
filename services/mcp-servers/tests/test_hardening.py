@@ -129,3 +129,26 @@ def test_build_server_with_auth_wires_verifier():
     assert str(mcp.settings.auth.resource_server_url).rstrip("/") == (
         "http://localhost:8101"
     )
+
+
+def test_build_server_cognito_passes_mode_and_scope(monkeypatch):
+    captured = {}
+
+    class Spy:
+        def __init__(self, *args, **kwargs):
+            captured["scope"] = kwargs.get("scope")
+
+    monkeypatch.setattr(
+        "toolgate_mcp_servers.app_factory.ClientCredentialsTokenProvider", Spy
+    )
+    settings = _settings().model_copy(
+        update={"idp": "cognito", "token_scope": "mock-enterprise/members:read"}
+    )
+    mcp = build_server("core-read", settings, lambda m, c: None)
+    assert captured["scope"] == "mock-enterprise/members:read"
+    assert mcp._token_verifier._cfg.mode == "cognito"
+
+    captured.clear()
+    kc = _settings().model_copy(update={"token_scope": "ignored"})
+    build_server("core-read", kc, lambda m, c: None)
+    assert captured["scope"] is None

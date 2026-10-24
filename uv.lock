@@ -2521,6 +2521,7 @@ dependencies = [
     { name = "mcp" },
     { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "toolgate-idp" },
 ]
 
 [package.dev-dependencies]
@@ -2534,6 +2535,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.12,<2" },
     { name = "pydantic-settings", specifier = ">=2.16.0" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.1" },
+    { name = "toolgate-idp", editable = "packages/toolgate-idp" },
 ]
 
 [package.metadata.requires-dev]

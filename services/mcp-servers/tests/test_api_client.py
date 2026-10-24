@@ -230,3 +230,38 @@ async def test_slow_api_yields_tool_error_result_not_hang():
     text = result.content[0].text
     assert "enterprise API unavailable, retry later" in text
     assert "mock-api.test" not in text and "Bearer" not in text
+
+
+async def test_token_request_includes_scope_only_when_set():
+    calls: list = []
+    provider = ClientCredentialsTokenProvider(
+        TOKEN_URL,
+        "core-read",
+        "s3cret",
+        scope="mock-enterprise/members:read",
+        transport=_token_transport(calls),
+    )
+    await provider.token()
+    assert calls == [
+        {
+            "grant_type": ["client_credentials"],
+            "client_id": ["core-read"],
+            "client_secret": ["s3cret"],
+            "scope": ["mock-enterprise/members:read"],
+        }
+    ]
+
+
+async def test_keycloak_provider_sends_no_scope():
+    calls: list = []
+    provider = ClientCredentialsTokenProvider(
+        TOKEN_URL, "core-read", "s3cret", transport=_token_transport(calls)
+    )
+    await provider.token()
+    assert calls == [
+        {
+            "grant_type": ["client_credentials"],
+            "client_id": ["core-read"],
+            "client_secret": ["s3cret"],
+        }
+    ]

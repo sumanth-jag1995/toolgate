@@ -1,10 +1,11 @@
-"""Inbound auth: verify Keycloak-issued RS256 access tokens presented to an MCP server."""
+"""Inbound auth: verify RS256 access tokens (Keycloak or Cognito) presented to an MCP server."""
 
 from typing import Any
 
 import anyio.to_thread
 import jwt
 from mcp.server.auth.provider import AccessToken, TokenVerifier
+from toolgate_idp import IdpConfig, Mode, decode_token, identity_from_claims
 
 
 class JwtTokenVerifier(TokenVerifier):
@@ -15,9 +16,14 @@ class JwtTokenVerifier(TokenVerifier):
         jwks_url: str,
         *,
         jwk_client: Any | None = None,
+        mode: Mode = "keycloak",
     ) -> None:
         self._issuer = issuer
         self._audience = audience
+        # Cognito mode requires the `<audience>/invoke` scope; invalid config fails here.
+        self._cfg = IdpConfig(
+            mode=mode, issuer=issuer, audience=audience, require_invoke_scope=True
+        )
         self._jwk_client = jwk_client or jwt.PyJWKClient(jwks_url)
 
     async def verify_token(self, token: str) -> AccessToken | None:
@@ -26,24 +32,21 @@ class JwtTokenVerifier(TokenVerifier):
             signing_key = await anyio.to_thread.run_sync(
                 self._jwk_client.get_signing_key_from_jwt, token
             )
-            claims = jwt.decode(
-                token,
-                signing_key.key,
-                algorithms=["RS256"],
-                audience=self._audience,  # matches a string or any entry of a list
-                issuer=self._issuer,
-                options={"require": ["exp", "iss", "aud"]},
-            )
+            claims = decode_token(token, signing_key.key, self._cfg)
+            identity = identity_from_claims(claims, self._cfg)
         except Exception:  # noqa: BLE001 - any failure means "not authenticated"
             return None
-        client_id = claims.get("azp")
-        if not isinstance(client_id, str) or not client_id:
+        if identity is None:
             return None
+        # Keep the token's own scope order (Identity.scopes is an unordered set).
+        scopes = [
+            sc for sc in str(claims.get("scope", "")).split() if sc in identity.scopes
+        ]
         return AccessToken(
             token=token,
-            client_id=client_id,
-            scopes=str(claims.get("scope", "")).split(),
-            expires_at=int(claims["exp"]),
+            client_id=identity.client_id,
+            scopes=scopes,
+            expires_at=identity.expires_at,
             resource=self._audience,
-            subject=claims.get("sub"),
+            subject=identity.subject,
         )

@@ -21,7 +21,10 @@ def build_server(
         api_client = ApiClient(
             settings.mock_api_url,
             ClientCredentialsTokenProvider(
-                settings.token_url, settings.client_id, settings.client_secret
+                settings.token_url,
+                settings.client_id,
+                settings.client_secret,
+                scope=settings.token_scope if settings.idp == "cognito" else None,
             ),
             timeout_s=settings.api_timeout_s,
         )
@@ -31,7 +34,10 @@ def build_server(
             host=settings.host,
             port=settings.port,
             token_verifier=JwtTokenVerifier(
-                settings.jwt_issuer, settings.mcp_audience, settings.jwks_url
+                settings.jwt_issuer,
+                settings.mcp_audience,
+                settings.jwks_url,
+                mode=settings.idp,
             ),
             auth=AuthSettings(
                 issuer_url=settings.jwt_issuer,

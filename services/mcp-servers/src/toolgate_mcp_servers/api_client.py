@@ -48,11 +48,13 @@ class ClientCredentialsTokenProvider:
         client_id: str,
         client_secret: str,
         *,
+        scope: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._token_url = token_url
         self._client_id = client_id
         self._client_secret = client_secret
+        self._scope = scope
         self._http = httpx.AsyncClient(transport=transport)
         self._lock = asyncio.Lock()
         self._token: str | None = None
@@ -67,14 +69,14 @@ class ClientCredentialsTokenProvider:
 
     async def _fetch(self) -> None:
         try:
-            resp = await self._http.post(
-                self._token_url,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
-                },
-            )
+            form = {
+                "grant_type": "client_credentials",
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+            }
+            if self._scope:
+                form["scope"] = self._scope
+            resp = await self._http.post(self._token_url, data=form)
             resp.raise_for_status()
             body = resp.json()
             token, expires_in = str(body["access_token"]), int(body["expires_in"])

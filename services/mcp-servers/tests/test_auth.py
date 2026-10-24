@@ -69,3 +69,34 @@ async def test_jwks_failure_rejected(make_token):
 
     v = JwtTokenVerifier("http://i", "core-read", "http://j", jwk_client=Boom())
     assert await v.verify_token(make_token()) is None
+
+
+async def test_cognito_valid_token_accepted(cognito_verifier, make_cognito_token):
+    token = make_cognito_token(["core-read/invoke", "other/scope"])
+    at = await cognito_verifier.verify_token(token)
+    assert at is not None
+    assert at.client_id == "cog-client"
+    assert at.scopes == ["core-read/invoke", "other/scope"]
+    assert at.resource == "core-read"
+    assert at.token == token
+
+
+async def test_cognito_other_audience_invoke_scope_rejected(
+    cognito_verifier, make_cognito_token
+):
+    token = make_cognito_token(["core-write/invoke"])
+    assert await cognito_verifier.verify_token(token) is None
+
+
+async def test_cognito_id_token_rejected(cognito_verifier, make_cognito_token):
+    token = make_cognito_token(["core-read/invoke"], token_use="id")
+    assert await cognito_verifier.verify_token(token) is None
+
+
+async def test_cognito_rejects_keycloak_shaped_token(cognito_verifier, make_token):
+    token = make_token(aud="core-read", scopes=["core-read/invoke"])
+    assert await cognito_verifier.verify_token(token) is None
+
+
+async def test_keycloak_mode_rejects_cognito_shaped_token(verifier, make_cognito_token):
+    assert await verifier.verify_token(make_cognito_token()) is None

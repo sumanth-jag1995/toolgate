@@ -8,12 +8,14 @@ dependencies = [
     "mcp>=1.12,<2",
     "pydantic-settings>=2.16.0",
     "pyjwt[crypto]>=2.15.1",
+    "toolgate-idp",
 ]
 
 [dependency-groups]
 dev = ["mock-enterprise"]
 
 [tool.uv.sources]
+toolgate-idp = { workspace = true }
 mock-enterprise = { workspace = true }
 
 [build-system]
