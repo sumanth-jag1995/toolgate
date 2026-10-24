@@ -7,6 +7,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from collections import Counter
 from pathlib import Path, PurePosixPath
 
 KINDS = ("wheel", "sdist")
@@ -91,7 +92,13 @@ def compare_manifest(
     """Return sorted messages for files that are unexpected or missing."""
     problems = []
     for kind in KINDS:
-        have = set(found.get(kind, []))
+        names = found.get(kind, [])
+        have = set(names)
+        problems += [
+            f"duplicate {kind} file: {name}"
+            for name, count in Counter(names).items()
+            if count > 1
+        ]
         want = expected.get(kind, set())
         problems += [f"unexpected {kind} file: {name}" for name in have - want]
         problems += [f"missing {kind} file: {name}" for name in want - have]
@@ -123,15 +130,20 @@ def scan_secrets(root: Path, gitleaks: str = "gitleaks") -> list[str]:
         raise ArtifactCheckError(
             f"gitleaks failed ({result.returncode}): {result.stderr.strip()}"
         )
+    unparseable = [
+        "gitleaks reported findings (exit 1) but the report could not be parsed"
+    ]
     try:
         findings = json.loads(result.stdout)
     except json.JSONDecodeError:
-        return [
-            f"gitleaks reported findings: {result.stdout.strip() or result.stderr.strip()}"
-        ]
+        return unparseable
+    if not isinstance(findings, list) or not findings:
+        return unparseable
     return [
         f"secret finding {item.get('RuleID', '?')} in {item.get('File', '?')}:"
         f"{item.get('StartLine', '?')}"
+        if isinstance(item, dict)
+        else "secret finding (unparseable entry)"
         for item in findings
     ]
 
