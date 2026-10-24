@@ -5,6 +5,7 @@ import jwt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from toolgate_idp import decode_token, identity_from_claims
 
 SCOPES = (
     "members:read",
@@ -37,26 +38,17 @@ def get_principal(
 ) -> Principal:
     if creds is None:
         raise _unauthorized("missing bearer token")
-    settings = request.app.state.settings
+    cfg = request.app.state.idp_cfg
     try:
         key = request.app.state.jwk_client.get_signing_key_from_jwt(creds.credentials)
-        claims = jwt.decode(
-            creds.credentials,
-            key.key,
-            algorithms=["RS256"],
-            audience=settings.jwt_audience,
-            issuer=settings.jwt_issuer,
-            options={"require": ["exp", "iss", "aud"]},
-        )
+        claims = decode_token(creds.credentials, key.key, cfg)
     except jwt.PyJWTError:
         # Covers expired, bad signature, wrong aud/iss, malformed, JWKS lookup failure.
         raise _unauthorized("invalid token") from None
-    client_id = claims.get("azp")
-    if not client_id:
+    identity = identity_from_claims(claims, cfg)
+    if identity is None:
         raise _unauthorized("invalid token")
-    return Principal(
-        client_id=client_id, scopes=frozenset(str(claims.get("scope", "")).split())
-    )
+    return Principal(client_id=identity.client_id, scopes=identity.scopes)
 
 
 def require_scope(scope: str) -> Callable[..., Principal]:

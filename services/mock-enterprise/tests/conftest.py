@@ -85,6 +85,25 @@ def make_token(rsa_key):
     return _make
 
 
+@pytest.fixture(scope="session")
+def make_cognito_token(rsa_key):
+    def _make(scopes, *, token_use="access", client_id="cog-client", extra=None):
+        now = int(time.time())
+        claims = {
+            "iss": ISSUER,
+            "client_id": client_id,
+            "token_use": token_use,
+            "scope": " ".join(scopes),
+            "iat": now,
+            "exp": now + 300,
+        }
+        claims.update(extra or {})
+        token = jwt.encode(claims, rsa_key, algorithm="RS256", headers={"kid": "test"})
+        return {"Authorization": f"Bearer {token}"}
+
+    return _make
+
+
 @pytest.fixture
 def read_headers(make_token):
     return make_token(READ_SCOPES)
@@ -124,3 +143,25 @@ async def canary_policy_id(session):
             select(Policy.policy_id).where(Policy.member_id == "M-900001")
         )
     ).one()
+
+
+@pytest_asyncio.fixture
+async def cognito_client(pg_url, session, rsa_key):
+    await seed(session, members=10)
+    engine = create_async_engine(pg_url, poolclass=NullPool)
+    settings = Settings(
+        database_url=pg_url,
+        jwt_issuer=ISSUER,
+        jwks_url="http://keycloak.test/jwks",
+        idp="cognito",
+    )
+    app = create_app(
+        settings,
+        jwk_client=StubJWKClient(rsa_key.public_key()),
+        sessionmaker=make_sessionmaker(engine),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        yield c
+    await engine.dispose()

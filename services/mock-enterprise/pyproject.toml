@@ -12,7 +12,11 @@ dependencies = [
     "pyjwt[crypto]>=2.15.1",
     "uvicorn>=0.54.0",
     "tzdata>=2026.5",
+    "toolgate-idp",
 ]
+
+[tool.uv.sources]
+toolgate-idp = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

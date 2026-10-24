@@ -1,6 +1,7 @@
 import jwt
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker
+from toolgate_idp import IdpConfig
 
 from mock_enterprise.db import make_engine, make_sessionmaker
 from mock_enterprise.routes_read import router as read_router
@@ -16,6 +17,14 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="Toolgate mock enterprise API")
     app.state.settings = settings
+    # Built once; invalid config (unknown mode, bad prefix) fails at startup.
+    app.state.idp_cfg = IdpConfig(
+        mode=settings.idp,
+        issuer=settings.jwt_issuer,
+        audience=settings.jwt_audience,
+        require_invoke_scope=False,
+        scope_prefix=settings.scope_prefix,
+    )
     app.state.jwk_client = jwk_client or jwt.PyJWKClient(
         settings.jwks_url, cache_keys=True
     )

@@ -4,6 +4,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.13 /uv /usr/local/bin/uv
 WORKDIR /app
 ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1 PATH="/app/.venv/bin:$PATH"
 COPY pyproject.toml uv.lock ./
+COPY packages/toolgate-idp ./packages/toolgate-idp
 COPY services/mock-enterprise ./services/mock-enterprise
 RUN uv sync --package mock-enterprise --frozen --no-dev
 EXPOSE 8000
