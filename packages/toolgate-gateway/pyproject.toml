@@ -5,6 +5,7 @@ description = "Toolgate gateway: authenticated MCP proxy with per-agent allowlis
 requires-python = ">=3.12"
 dependencies = [
     "toolgate-pin",
+    "toolgate-idp",
     "pydantic-settings>=2.4",
     "PyYAML>=6",
     "pyjwt[crypto]>=2.8",
@@ -32,3 +33,4 @@ packages = ["src/toolgate_gateway"]
 
 [tool.uv.sources]
 toolgate-pin = { workspace = true }
+toolgate-idp = { workspace = true }

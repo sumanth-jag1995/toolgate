@@ -5,6 +5,7 @@ WORKDIR /app
 ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1 PATH="/app/.venv/bin:$PATH"
 COPY pyproject.toml uv.lock ./
 COPY packages/toolgate-pin ./packages/toolgate-pin
+COPY packages/toolgate-idp ./packages/toolgate-idp
 COPY packages/toolgate-gateway ./packages/toolgate-gateway
 RUN uv sync --package toolgate-gateway --frozen --no-dev
 RUN useradd --system --no-create-home --uid 10001 toolgate

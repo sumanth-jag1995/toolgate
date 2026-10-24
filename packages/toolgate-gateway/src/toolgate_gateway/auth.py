@@ -1,6 +1,7 @@
 """Gateway auth.
 
-Inbound: verify Keycloak RS256 agent tokens (aud = toolgate-gateway).
+Inbound: verify RS256 agent tokens (Keycloak: aud = toolgate-gateway; Cognito:
+scope toolgate-gateway/invoke, client id mapped to an agent name).
 Outbound: the gateway's own client-credentials token for downstream MCP servers.
 The agent's token is never forwarded.
 """
@@ -8,13 +9,14 @@ The agent's token is never forwarded.
 import asyncio
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 from typing import Any
 
 import anyio.to_thread
 import httpx
 import jwt
 from mcp.server.auth.provider import AccessToken, TokenVerifier
+from toolgate_idp import IdpConfig, Mode, decode_token, identity_from_claims
 
 
 class DownstreamAuthError(Exception):
@@ -36,9 +38,21 @@ class AgentTokenVerifier(TokenVerifier):
         jwk_client: Any | None = None,
         refetch_interval_s: float = UNKNOWN_KID_REFETCH_INTERVAL_S,
         clock: Callable[[], float] = time.monotonic,
+        mode: Mode = "keycloak",
+        agent_client_map: Mapping[str, str] | None = None,
     ) -> None:
         self._issuer = issuer
         self._audience = audience
+        if mode == "cognito" and not agent_client_map:
+            # Without the map the raw Cognito client id would become the agent name.
+            raise ValueError("cognito mode requires an agent client map")
+        self._cfg = IdpConfig(
+            mode=mode,
+            issuer=issuer,
+            audience=audience,
+            require_invoke_scope=True,
+            agent_client_map=agent_client_map or {},
+        )
         self._jwk_client = jwk_client or jwt.PyJWKClient(jwks_url)
         self._refetch_interval = refetch_interval_s
         self._clock = clock
@@ -87,28 +101,35 @@ class AgentTokenVerifier(TokenVerifier):
         try:
             # JWKS lookup may do blocking HTTP: keep it off the event loop.
             signing_key = await anyio.to_thread.run_sync(self._signing_key, token)
-            claims = jwt.decode(
-                token,
-                signing_key.key,
-                algorithms=["RS256"],
-                audience=self._audience,
-                issuer=self._issuer,
-                options={"require": ["exp", "iss", "aud"]},
-            )
+            claims = decode_token(token, signing_key.key, self._cfg)
+            identity = identity_from_claims(claims, self._cfg)
         except Exception:  # noqa: BLE001 - any failure means "not authenticated"
             return None
-        client_id = claims.get("azp")
-        if not isinstance(client_id, str) or not client_id:
+        if identity is None:
             return None
-        sub = claims.get("sub")
+        # Keep the token's own scope order (Identity.scopes is an unordered set).
+        scopes = [
+            sc for sc in str(claims.get("scope", "")).split() if sc in identity.scopes
+        ]
         return AccessToken(
             token=token,
-            client_id=client_id,
-            scopes=str(claims.get("scope", "")).split(),
-            expires_at=int(claims["exp"]),
+            client_id=identity.client_id,  # cognito: the mapped agent name
+            scopes=scopes,
+            expires_at=identity.expires_at,
             resource=self._audience,
-            subject=sub if isinstance(sub, str) else None,
+            subject=identity.subject,
         )
+
+
+def build_verifier(settings: Any) -> AgentTokenVerifier:
+    """The inbound verifier for ``settings`` (a GatewaySettings)."""
+    return AgentTokenVerifier(
+        settings.issuer,
+        settings.audience,
+        settings.jwks_url,
+        mode=settings.idp,
+        agent_client_map=settings.agent_client_map,
+    )
 
 
 class ClientCredentialsAuth(httpx.Auth):
@@ -126,12 +147,14 @@ class ClientCredentialsAuth(httpx.Auth):
         client_id: str,
         client_secret: str,
         *,
+        scope: str | None = None,
         refresh_margin_s: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._token_url = token_url
         self._client_id = client_id
         self._client_secret = client_secret
+        self._scope = scope
         self._margin = refresh_margin_s
         # Separate client: the token fetch must not pass through this auth.
         self._http = httpx.AsyncClient(transport=transport)
@@ -150,15 +173,15 @@ class ClientCredentialsAuth(httpx.Auth):
             return self._token
 
     async def _fetch(self) -> None:
+        form = {
+            "grant_type": "client_credentials",
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+        }
+        if self._scope:
+            form["scope"] = self._scope
         try:
-            resp = await self._http.post(
-                self._token_url,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
-                },
-            )
+            resp = await self._http.post(self._token_url, data=form)
         except Exception as exc:  # noqa: BLE001 - message must carry type only
             raise DownstreamAuthError(type(exc).__name__) from None
         if resp.status_code != 200:

@@ -2479,6 +2479,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rfc8785" },
     { name = "starlette" },
+    { name = "toolgate-idp" },
     { name = "toolgate-pin" },
     { name = "uvicorn" },
 ]
@@ -2497,6 +2498,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6" },
     { name = "rfc8785", specifier = ">=0.1.4" },
     { name = "starlette", specifier = ">=1.8.0" },
+    { name = "toolgate-idp", editable = "packages/toolgate-idp" },
     { name = "toolgate-pin", editable = "packages/toolgate-pin" },
     { name = "uvicorn", specifier = ">=0.54.0" },
 ]
