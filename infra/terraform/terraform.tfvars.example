@@ -1,0 +1,4 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Never commit real values.
+region      = "us-east-1"
+alert_email = "you@example.com"
+budget_usd  = 25
