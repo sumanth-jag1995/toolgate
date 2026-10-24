@@ -103,16 +103,20 @@ Prints the detection and false-positive table for the bundled corpus. See [Resul
 ## Lifecycle
 
 ```mermaid
-flowchart LR
-    A[approve] --> B[(toolgate.lock.json)]
-    B --> C{check / Pinner.verify}
-    C -- hash matches --> D[allowed]
-    C -- changed, new or removed --> E[quarantine]
-    E --> F[review diff + findings]
-    F -- intended --> G[re-approve]
-    G --> B
-    F -- not intended --> H[reject the server change]
+stateDiagram-v2
+    direction LR
+    [*] --> Unpinned: tool first seen
+    Unpinned --> Pinned: approve, after a human reads the diff and findings
+    Pinned --> Pinned: verify, hash matches (allowed)
+    Pinned --> Quarantined: verify finds drift
+    Pinned --> Quarantined: tool removed
+    Pinned --> Quarantined: server renamed (server_drift)
+    Unpinned --> Quarantined: verify before any approval (unpinned)
+    Quarantined --> Pinned: approve the change (new hash written to the lockfile)
+    Quarantined --> Quarantined: not approved, tool stays out of the agent's list
 ```
+
+`verify` never raises on drift. It returns the matching tools as `allowed` and everything else as `quarantined` with a reason (`drift`, `unpinned`, `removed`, `server_drift`) and a diff. Only `approve` writes to the lockfile, so a quarantined tool stays out until a human re-approves it and the lockfile change is committed.
 
 ## Canonicalization rules
 
