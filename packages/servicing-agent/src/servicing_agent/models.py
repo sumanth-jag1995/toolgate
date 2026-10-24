@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
@@ -35,7 +36,12 @@ def make_chat_model(
             from langchain_aws import ChatBedrockConverse
         except ImportError:
             raise ConfigError(None, "install servicing-agent[bedrock]") from None
-        return ChatBedrockConverse(
-            model_id=cfg.model, temperature=cfg.temperature, max_tokens=cfg.max_tokens
-        )
+        kwargs: dict[str, Any] = {
+            "model_id": cfg.model,
+            "temperature": cfg.temperature,
+            "max_tokens": cfg.max_tokens,
+        }
+        if cfg.region:
+            kwargs["region_name"] = cfg.region
+        return ChatBedrockConverse(**kwargs)
     raise ConfigError(None, "unknown provider")

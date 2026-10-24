@@ -1,0 +1,17 @@
+# Amazon Bedrock models for the evaluation matrix (same format as models.yaml).
+# The model ids are PLACEHOLDERS: sub-project F2 fills them from
+#   aws bedrock list-foundation-models --region us-east-1
+# for the account that runs the eval. `toolgate-eval run` refuses to start while
+# any model id is TO_BE_CONFIRMED_IN_F2, so this file cannot be run by accident.
+# No credentials live here: boto3 resolves them from the standard AWS chain.
+strong:
+  provider: bedrock
+  region: us-east-1
+  model: TO_BE_CONFIRMED_IN_F2
+  temperature: 0
+  max_tokens: 4096
+small:
+  provider: bedrock
+  region: us-east-1
+  model: TO_BE_CONFIRMED_IN_F2
+  temperature: 0

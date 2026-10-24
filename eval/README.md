@@ -85,7 +85,7 @@ paid endpoints. Live tool-calling validation (the smoke run below) is
 chosen. If a model does not call tools in the smoke run, replace it in
 `models.yaml`. Each record stores the yaml name (`model`), the provider id
 (`model_id`) and a hash of that model's settings (`model_config_hash`: provider,
-model id, temperature, base_url and max_tokens), so editing one model's entry
+model id, temperature, base_url, max_tokens and, for Bedrock, region), so editing one model's entry
 re-runs only that model.
 
 `strong` is a reasoning model. Its hidden reasoning tokens count against
@@ -94,6 +94,24 @@ it reaches a tool call or an answer. `models.yaml` therefore sets
 `max_tokens: 4096` for `strong` only. Changing that value changes `strong`'s
 config hash: its episodes re-run, and its gateway run needs fresh direct
 results under the new hash.
+
+### Bedrock (placeholder, not yet runnable)
+
+`eval/models.bedrock.yaml` has `strong` and `small` entries for Amazon Bedrock
+in `us-east-1`. Their model id is the literal `TO_BE_CONFIRMED_IN_F2`, and
+`toolgate-eval run` refuses to start with an `error:` naming the file while that
+placeholder is present. To confirm later (F2), list the models the account can
+use, then replace both ids:
+
+```bash
+aws bedrock list-foundation-models --region us-east-1
+uv sync --all-packages --extra bedrock   # installs langchain-aws
+uv run toolgate-eval run --models eval/models.bedrock.yaml
+```
+
+Credentials are never in the file: boto3 resolves them from the standard AWS
+chain. Adding `region` to an entry does not change the config hash of existing
+OpenRouter entries.
 
 ## How to run
 

@@ -28,6 +28,7 @@ class ModelConfig:
     base_url: str | None = None
     api_key_env: str = "OPENROUTER_API_KEY"
     max_tokens: int = 1024
+    region: str | None = None  # bedrock only; AWS credentials come from the AWS chain
 
 
 def load_models(path: str | Path) -> dict[str, ModelConfig]:

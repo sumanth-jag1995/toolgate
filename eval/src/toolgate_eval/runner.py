@@ -130,6 +130,9 @@ EPISODE_ERRORS: tuple[type[BaseException], ...] = (
 _SAFE_MESSAGE = (WorldError, ConditionError, ConnectionError)  # names only
 
 
+PLACEHOLDER_MODEL_ID = "TO_BE_CONFIRMED_IN_F2"
+
+
 class RunnerError(Exception):
     """The run cannot proceed (bad options, fairness rule)."""
 
@@ -235,6 +238,8 @@ def model_config_hash(cfg: ModelConfig) -> str:
         "base_url": cfg.base_url,
         "max_tokens": cfg.max_tokens,
     }
+    if cfg.region is not None:  # absent for openrouter, so old hashes stay valid
+        settings["region"] = cfg.region
     return hashlib.sha256(_stable_json(settings).encode("utf-8")).hexdigest()
 
 
@@ -778,7 +783,12 @@ async def run_cli(opts: RunOptions) -> RunSummary:
     from toolgate_eval.world import World, WorldSettings
 
     models = select_models(load_models(opts.models_path), opts.only_models)
-    for cfg in models.values():
+    for name, cfg in models.items():
+        if cfg.model == PLACEHOLDER_MODEL_ID:
+            raise RunnerError(
+                f"{opts.models_path}: model {name!r} still has the placeholder "
+                f"model id {PLACEHOLDER_MODEL_ID}; set a real id before running"
+            )
         make_chat_model(cfg)  # fails fast (ConfigError) on a missing API key
     corpus = load_corpus("test")
     tasks = build_tasks()  # once per run: prompt dates and checks share today

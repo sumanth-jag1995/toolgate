@@ -1352,3 +1352,45 @@ async def test_gateway_outage_on_a_real_tool_is_an_error():
         "(2 decision(s))"
     )
     assert rec.leaked is None
+
+
+def test_config_hash_differs_between_providers_and_regions():
+    from servicing_agent.config import ModelConfig
+    from toolgate_eval.runner import model_config_hash
+
+    a = ModelConfig(provider="openrouter", model="x")
+    b = ModelConfig(provider="bedrock", model="x")
+    c = ModelConfig(provider="bedrock", model="x", region="us-east-1")
+    d = ModelConfig(provider="bedrock", model="x", region="eu-west-1")
+    assert len({model_config_hash(m) for m in (a, b, c, d)}) == 4
+
+
+def test_existing_openrouter_config_hashes_are_unchanged():
+    from servicing_agent.config import load_models
+    from toolgate_eval.runner import model_config_hash
+
+    models = load_models(Path(__file__).parents[1] / "models.yaml")
+    assert model_config_hash(models["strong"]) == (
+        "5f542f884e82d1e5b344438c24789a76f5f7a66194bca266ede59e2c8c7a117c"
+    )
+    assert model_config_hash(models["small"]) == (
+        "2887a5784c3adcff7139ef1a8e40579527704b23ee7a3598fd6cd2b4725a1c68"
+    )
+
+
+def test_bedrock_yaml_loads_but_placeholder_cannot_run(capsys, tmp_path: Path):
+    from servicing_agent.config import load_models
+
+    path = Path(__file__).parents[1] / "models.bedrock.yaml"
+    models = load_models(path)
+    assert set(models) == {"strong", "small"}
+    for cfg in models.values():
+        assert cfg.provider == "bedrock" and cfg.region == "us-east-1"
+        assert cfg.model == "TO_BE_CONFIRMED_IN_F2"
+    code = cli.main(
+        ["run", "--models", str(path), "--results", str(tmp_path / "r.jsonl")]
+    )
+    err = capsys.readouterr().err
+    assert code == 2
+    assert err.startswith("error:") and "models.bedrock.yaml" in err
+    assert "TO_BE_CONFIRMED_IN_F2" in err

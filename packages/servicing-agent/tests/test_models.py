@@ -73,3 +73,61 @@ def test_repr_hides_key():
     assert SECRET not in repr(model)
     assert SECRET not in str(model)
     assert SECRET not in repr(cfg)
+
+
+def test_bedrock_branch_builds_with_fake_module(monkeypatch):
+    import types
+
+    seen: dict = {}
+
+    class FakeConverse:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    fake = types.ModuleType("langchain_aws")
+    fake.ChatBedrockConverse = FakeConverse  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langchain_aws", fake)
+    cfg = ModelConfig(
+        provider="bedrock",
+        model="some.model-id",
+        region="us-east-1",
+        temperature=0.0,
+        max_tokens=512,
+    )
+    make_chat_model(cfg, env={})
+    assert seen == {
+        "model_id": "some.model-id",
+        "region_name": "us-east-1",
+        "temperature": 0.0,
+        "max_tokens": 512,
+    }
+
+
+def test_bedrock_without_region_passes_no_region(monkeypatch):
+    import types
+
+    seen: dict = {}
+
+    class FakeConverse:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    fake = types.ModuleType("langchain_aws")
+    fake.ChatBedrockConverse = FakeConverse  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langchain_aws", fake)
+    make_chat_model(ModelConfig(provider="bedrock", model="m"), env={})
+    assert "region_name" not in seen
+
+
+def test_bedrock_missing_extra_is_config_error(monkeypatch):
+    monkeypatch.setitem(sys.modules, "langchain_aws", None)
+    with pytest.raises(ConfigError, match=r"servicing-agent\[bedrock\]"):
+        make_chat_model(
+            ModelConfig(provider="bedrock", model="m", region="us-east-1"), env={}
+        )
+
+
+def test_region_field_loads_from_yaml(tmp_path):
+    p = tmp_path / "models.yaml"
+    p.write_text("a:\n  provider: bedrock\n  model: m\n  region: eu-west-1\n")
+    assert load_models(p)["a"].region == "eu-west-1"
