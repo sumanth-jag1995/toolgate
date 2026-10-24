@@ -145,7 +145,7 @@ def test_teardown_friendly_settings():
 
 def test_variable_validations():
     variables = _read("variables.tf")
-    assert variables.count("validation {") >= 3
+    assert variables.count("validation {") == 7
     assert 'var.region == "us-east-1"' in variables
     assert "var.budget_usd > 0" in variables
     assert "regex(" in variables
@@ -307,61 +307,196 @@ def test_eval_targets_off_by_default_and_destroyable():
     assert 'name = "toolgate.local"' in ecs
 
 
+def _spec_block(ecs: str, name: str) -> str:
+    """Text of one explicit entry in local.specs (mock-api, gateway, gateway-migrate)."""
+    start = ecs.index(f'    "{name}" = {{')
+    rest = ecs[start + 1 :]
+    nxt = re.search(r'\n    "[\w-]+" = \{|\n  \}\)\n', rest)
+    assert nxt
+    return rest[: nxt.start()]
+
+
+def _names_in(block: str, section: str) -> set[str]:
+    """Keys assigned inside `env = ...{ }` or `secrets = {  }` of a spec block."""
+    m = re.search(
+        rf"\b{section}\s*=\s*(?:merge\(\w+(?:\.\w+)*, )?\{{(.*?)\n\s*\}}",
+        block,
+        re.DOTALL,
+    )
+    assert m, section
+    return set(re.findall(r"^\s*([A-Z][A-Z0-9_]+)\s*=", m.group(1), re.MULTILINE))
+
+
 def test_ecs_mirrors_compose_ports_and_variable_names():
     compose = yaml.safe_load((ROOT / "infra/docker-compose.yml").read_text("utf-8"))
     services = compose["services"]
     ecs = _ecs()
-    for name in ("mock-api", "core-read", "core-write", "comms", "gateway"):
-        svc = services[name]
-        port = int(svc["ports"][0].rsplit(":", 1)[1])
-        assert f"{port}" in ecs, name
-        for var in svc.get("environment", {}):
-            if var == "DATABASE_URL":
-                continue  # composed in the container command from secret parts
-            if var in ("OTEL_EXPORTER_OTLP_ENDPOINT", "GATEWAY_CLIENT_ID"):
-                assert var in ecs
-                continue
-            assert re.search(rf"\b{var}\b", ecs), f"{name}: {var}"
-    assert "mock_enterprise.seed --reset" in ecs
-    assert "toolgate_mcp_servers" in ecs
-    assert "toolgate-gateway serve" in ecs
+
+    def compose_port(name: str) -> int:
+        return int(services[name]["ports"][0].rsplit(":", 1)[1])
+
+    # MCP servers: generated from one template; ports in the lookup map.
+    mcp_port_map = re.search(r"port\s*=\s*(\{[^}]*\})\[n\]", ecs)
+    assert mcp_port_map
+    mcp_ports = {
+        k: int(v)
+        for k, v in re.findall(r'"([\w-]+)"\s*=\s*(\d+)', mcp_port_map.group(1))
+    }
+    mcp_block = ecs[ecs.index("mcp_env = {") : ecs.index("eval_spec")]
+    mcp_env_names = set(
+        re.findall(
+            r"^\s*([A-Z][A-Z_]+)\s*=", mcp_block.split("mcp_spec")[0], re.MULTILINE
+        )
+    )
+    mcp_secret_names = set(
+        re.findall(r"^\s*([A-Z][A-Z_]+)\s*=\s*\"\$\{", mcp_block, re.MULTILINE)
+    )
+    for name in ("core-read", "core-write", "comms"):
+        assert mcp_ports[name] == compose_port(name), name
+        compose_env = set(services[name]["environment"])
+        assert compose_env == mcp_env_names | mcp_secret_names, name
+        assert services[name]["command"] == [
+            "python",
+            "-m",
+            f"toolgate_mcp_servers.{name.replace('-', '_')}",
+        ]
+    assert "toolgate_mcp_servers.${replace(n," in ecs
+
+    for name in ("mock-api", "gateway"):
+        block = _spec_block(ecs, name)
+        assert re.search(rf"\bport\s*=\s*{compose_port(name)}\b", block), name
+        tf_names = _names_in(block, "env") | _names_in(block, "secrets")
+        compose_env = set(services[name].get("environment", {}))
+        assert compose_env <= tf_names, (name, compose_env - tf_names)
+
+    mock = _spec_block(ecs, "mock-api")
+    assert (
+        "python -m mock_enterprise.seed --reset && exec python -m mock_enterprise.app"
+        in mock
+    )
+    # Gateway uses the image CMD (`toolgate-gateway serve`), as compose does.
+    assert re.search(r"command\s*=\s*\[\]", _spec_block(ecs, "gateway"))
+    migrate = _spec_block(ecs, "gateway-migrate")
+    cmd = services["gateway-migrate"]["command"]
+    for token in cmd:
+        assert f'"{token}"' in migrate, token
+
+
+def test_db_credentials_are_never_in_urls_or_plain_env():
+    ecs = _ecs()
+    # No userinfo in any URL or DSN.
+    assert not re.search(r"://[^/\s\"]*@", ecs)
+    for dsn in ("postgresql+asyncpg:///toolgate", "postgresql:///toolgate"):
+        assert f'"{dsn}"' in ecs
+    for name in ("mock-api", "gateway-migrate"):
+        block = _spec_block(ecs, name)
+        secrets = _names_in(block, "secrets")
+        assert {"PGUSER", "PGPASSWORD"} <= secrets, name
+        assert ":username::" in block and ":password::" in block
+    gateway = _spec_block(ecs, "gateway")
+    assert "PGPASSWORD" in _names_in(gateway, "secrets")
+    assert "gateway_db_password" in gateway
+
+
+def test_asyncpg_and_sqlalchemy_fall_back_to_pg_env(monkeypatch):
+    """Verifies the empty-host DSNs used in the task definitions."""
+    connect_utils = pytest.importorskip("asyncpg.connect_utils")
+    sqlalchemy_url = pytest.importorskip("sqlalchemy.engine")
+    pg_dialect = pytest.importorskip("sqlalchemy.dialects.postgresql.asyncpg")
+    for key, value in {
+        "PGHOST": "db.example.internal",
+        "PGPORT": "5432",
+        "PGUSER": "app user",
+        "PGPASSWORD": "p:/@ss%w",
+        "PGDATABASE": "ignored",
+    }.items():
+        monkeypatch.setenv(key, value)
+    none_args = dict.fromkeys(
+        (
+            "host",
+            "port",
+            "user",
+            "password",
+            "passfile",
+            "database",
+            "ssl",
+            "direct_tls",
+            "server_settings",
+            "target_session_attrs",
+            "krbsrvname",
+            "gsslib",
+            "service",
+            "servicefile",
+        )
+    )
+    addrs, params = connect_utils._parse_connect_dsn_and_args(
+        dsn="postgresql:///toolgate", **none_args
+    )
+    assert addrs == [("db.example.internal", 5432)]
+    assert (params.user, params.password, params.database) == (
+        "app user",
+        "p:/@ss%w",
+        "toolgate",
+    )
+    # SQLAlchemy forwards only the database, leaving host and credentials to asyncpg.
+    url = sqlalchemy_url.make_url("postgresql+asyncpg:///toolgate")
+    args, kwargs = pg_dialect.dialect().create_connect_args(url)
+    assert args == [] and kwargs == {"database": "toolgate"}
+
+
+def test_cloud_policy_downstreams_match_compose_ports():
+    from toolgate_gateway.downstreams import load_downstreams
+
+    cloud = load_downstreams(ROOT / "policy" / "gateway.cloud.yaml")
+    local = load_downstreams(ROOT / "policy" / "gateway.yaml")
+    assert {d.server_id for d in cloud} == {d.server_id for d in local}
+    ports = {"core-read": 8101, "core-write": 8102, "comms": 8103}
+    compose = yaml.safe_load((ROOT / "infra/docker-compose.yml").read_text("utf-8"))
+    for name, port in ports.items():
+        assert int(compose["services"][name]["ports"][0].rsplit(":", 1)[1]) == port
+    assert {d.server_id for d in cloud} == set(ports)
+    for d in cloud:
+        assert d.url == f"http://{d.server_id}.toolgate.local:{ports[d.server_id]}/mcp"
 
 
 def test_ecs_secrets_only_by_reference():
     ecs = _ecs()
     assert "valueFrom" in ecs
-    assert not re.search(r"(CLIENT_SECRET|PASSWORD|HMAC_KEY)\s*=\s*\"[^$]", ecs)
-    assert "secret_string" in ecs  # only the generated gateway secret
-    assert ecs.count("secret_string") == 1
+    # Any assignment whose name looks secret must be a reference, never a literal
+    # (this also catches a value moved into an `environment`/`env` map).
+    sensitive = re.compile(
+        r"^\s*\w*(SECRET|PASSWORD|PASSWD|HMAC|TOKEN_VALUE|API_KEY)\w*\s*=\s*\"([^\"]*)\"",
+        re.MULTILINE,
+    )
+    for match in sensitive.finditer(ecs):
+        assert match.group(2).startswith("${"), match.group(0)
+    # Secret-looking names never appear under an environment/env map.
+    for name in ("mock-api", "gateway", "gateway-migrate"):
+        env = _names_in(_spec_block(ecs, name), "env")
+        assert not [n for n in env if re.search(r"SECRET|PASSWORD|HMAC", n)], name
+    assert ecs.count("secret_string") == 1  # only the generated gateway secret
+    assert ecs.count("random_password.gateway_db.result") == 1
+    assert ecs.count("random_password.audit_hmac.result") == 1
+    # Task roles carry no secret access; the execution role fetches `secrets`.
+    assert ecs.count("secretsmanager:GetSecretValue") == 1
+    assert 'data "aws_caller_identity" "current"' in ecs
+    assert 'propagate_tags          = "SERVICE"' in ecs
+    assert "enable_ecs_managed_tags = true" in ecs
+
+
+def _run_tf(tf: str, *args: str) -> None:
+    res = subprocess.run(
+        [tf, f"-chdir={TF}", *args], capture_output=True, text=True, check=False
+    )
+    assert res.returncode == 0, f"terraform {' '.join(args)}\n{res.stdout}{res.stderr}"
 
 
 def test_terraform_fmt_and_validate():
     tf, reason = _terraform_bin()
     if not tf:
         pytest.skip(reason)
-    base = [tf, f"-chdir={TF}"]
-
-    def run(*args: str) -> None:
-        res = subprocess.run(
-            [*base, *args], capture_output=True, text=True, check=False
-        )
-        assert res.returncode == 0, (
-            f"terraform {' '.join(args)}\n{res.stdout}{res.stderr}"
-        )
-
-    run("init", "-backend=false", "-input=false", "-lockfile=readonly", "-no-color")
-    run("fmt", "-check", "-recursive", "-no-color")
-    run("validate", "-no-color")
-
-
-def test_validate_still_passes():
-    tf, reason = _terraform_bin()
-    if not tf:
-        pytest.skip(reason)
-    res = subprocess.run(
-        [tf, f"-chdir={TF}", "validate", "-no-color"],
-        capture_output=True,
-        text=True,
-        check=False,
+    _run_tf(
+        tf, "init", "-backend=false", "-input=false", "-lockfile=readonly", "-no-color"
     )
-    assert res.returncode == 0, res.stdout + res.stderr
+    _run_tf(tf, "fmt", "-check", "-recursive", "-no-color")
+    _run_tf(tf, "validate", "-no-color")

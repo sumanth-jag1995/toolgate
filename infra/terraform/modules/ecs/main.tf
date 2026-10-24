@@ -1,5 +1,15 @@
 locals {
   db_host = split(":", var.db_endpoint)[0]
+  db_port = split(":", var.db_endpoint)[1]
+
+  # libpq-style connection settings. The DSNs carry no host or credentials;
+  # asyncpg reads PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE from the
+  # environment. PGUSER/PGPASSWORD arrive through Secrets Manager only.
+  pg_env = {
+    PGHOST     = local.db_host
+    PGPORT     = local.db_port
+    PGDATABASE = "toolgate"
+  }
 
   mcp_servers = ["core-read", "core-write", "comms"]
 
@@ -57,16 +67,16 @@ locals {
       port = 8000
       command = [
         "/bin/sh", "-c",
-        "export DATABASE_URL=\"postgresql+asyncpg://$${DB_USER}:$${DB_PASSWORD}@$${DB_HOST}:5432/toolgate\" && python -m mock_enterprise.seed --reset && exec python -m mock_enterprise.app",
+        "python -m mock_enterprise.seed --reset && exec python -m mock_enterprise.app",
       ]
-      env = {
-        JWT_ISSUER = var.issuer_url
-        JWKS_URL   = var.jwks_url
-        DB_HOST    = local.db_host
-      }
+      env = merge(local.pg_env, {
+        JWT_ISSUER   = var.issuer_url
+        JWKS_URL     = var.jwks_url
+        DATABASE_URL = "postgresql+asyncpg:///toolgate"
+      })
       secrets = {
-        DB_USER     = "${var.db_secret_arn}:username::"
-        DB_PASSWORD = "${var.db_secret_arn}:password::"
+        PGUSER     = "${var.db_secret_arn}:username::"
+        PGPASSWORD = "${var.db_secret_arn}:password::"
       }
       secret_arns = [var.db_secret_arn]
       cpu         = 256
@@ -75,12 +85,9 @@ locals {
     }
 
     "gateway" = {
-      port = 8200
-      command = [
-        "/bin/sh", "-c",
-        "export DATABASE_URL=\"postgresql://toolgate_gateway_app:$${GATEWAY_DB_PASSWORD}@$${DB_HOST}:5432/toolgate\" && exec toolgate-gateway serve",
-      ]
-      env = {
+      port    = 8200
+      command = []
+      env = merge(local.pg_env, {
         GATEWAY_ISSUER              = var.issuer_url
         GATEWAY_JWKS_URL            = var.jwks_url
         GATEWAY_TOKEN_URL           = var.token_url
@@ -88,13 +95,15 @@ locals {
         GATEWAY_POLICY_PATH         = "/policy/agents.yaml"
         GATEWAY_DOWNSTREAMS_PATH    = "/policy/gateway.cloud.yaml"
         GATEWAY_PUBLIC_URL          = local.public_url
-        DB_HOST                     = local.db_host
         OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318"
-      }
+        # App role only (INSERT on gateway.audit_log); its password is PGPASSWORD.
+        DATABASE_URL = "postgresql:///toolgate"
+        PGUSER       = "toolgate_gateway_app"
+      })
       secrets = {
         GATEWAY_CLIENT_ID     = "${var.client_secret_arns["gateway"]}:client_id::"
         GATEWAY_CLIENT_SECRET = "${var.client_secret_arns["gateway"]}:client_secret::"
-        GATEWAY_DB_PASSWORD   = "${local.gateway_secret_arn}:gateway_db_password::"
+        PGPASSWORD            = "${local.gateway_secret_arn}:gateway_db_password::"
         AUDIT_HMAC_KEY        = "${local.gateway_secret_arn}:audit_hmac_key::"
       }
       secret_arns = [var.client_secret_arns["gateway"], local.gateway_secret_arn]
@@ -104,17 +113,20 @@ locals {
     }
 
     # One-shot (run with `aws ecs run-task`): creates the gateway schema and the
-    # INSERT-only app role. Not a service.
+    # INSERT-only app role. Not a service. Connects as the RDS master user.
     "gateway-migrate" = {
       port = 0
       command = [
-        "/bin/sh", "-c",
-        "export GATEWAY_ADMIN_DSN=\"postgresql://$${DB_USER}:$${DB_PASSWORD}@$${DB_HOST}:5432/toolgate\" && exec toolgate-gateway migrate --admin-dsn-env GATEWAY_ADMIN_DSN --app-password-env GATEWAY_DB_PASSWORD",
+        "toolgate-gateway", "migrate",
+        "--admin-dsn-env", "GATEWAY_ADMIN_DSN",
+        "--app-password-env", "GATEWAY_DB_PASSWORD",
       ]
-      env = { DB_HOST = local.db_host }
+      env = merge(local.pg_env, {
+        GATEWAY_ADMIN_DSN = "postgresql:///toolgate"
+      })
       secrets = {
-        DB_USER             = "${var.db_secret_arn}:username::"
-        DB_PASSWORD         = "${var.db_secret_arn}:password::"
+        PGUSER              = "${var.db_secret_arn}:username::"
+        PGPASSWORD          = "${var.db_secret_arn}:password::"
         GATEWAY_DB_PASSWORD = "${local.gateway_secret_arn}:gateway_db_password::"
       }
       secret_arns = [var.db_secret_arn, local.gateway_secret_arn]
@@ -199,9 +211,12 @@ resource "aws_service_discovery_service" "this" {
 }
 
 # ---------------------------------------------------------------------------
-# IAM: one execution role and one task role per task, each limited to its own
-# secrets (and its own ECR repository and log group).
+# IAM: one execution role and one task role per task. The execution role fetches
+# the task definition `secrets` and is limited to the task's own secrets, ECR
+# repository and log group. Task roles carry no secret access.
 # ---------------------------------------------------------------------------
+data "aws_caller_identity" "current" {}
+
 data "aws_iam_policy_document" "assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -242,7 +257,7 @@ data "aws_iam_policy_document" "execution" {
 
   statement {
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
-    resources = ["arn:aws:logs:${var.region}:*:log-group:${var.log_group_names[each.key]}:*"]
+    resources = ["arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:${var.log_group_names[each.key]}:*"]
   }
 
   dynamic "statement" {
@@ -259,22 +274,6 @@ resource "aws_iam_role_policy" "execution" {
   name     = "execution"
   role     = aws_iam_role.execution[each.key].id
   policy   = data.aws_iam_policy_document.execution[each.key].json
-}
-
-data "aws_iam_policy_document" "task" {
-  for_each = { for k, v in local.active : k => v if length(v.secret_arns) > 0 }
-
-  statement {
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = each.value.secret_arns
-  }
-}
-
-resource "aws_iam_role_policy" "task" {
-  for_each = data.aws_iam_policy_document.task
-  name     = "own-secrets"
-  role     = aws_iam_role.task[each.key].id
-  policy   = each.value.json
 }
 
 # The ADOT sidecar runs under the gateway task role and exports traces to X-Ray.
@@ -355,6 +354,9 @@ resource "aws_ecs_service" "this" {
   task_definition = aws_ecs_task_definition.this[each.key].arn
   desired_count   = 1
   launch_type     = "FARGATE"
+
+  enable_ecs_managed_tags = true
+  propagate_tags          = "SERVICE"
 
   network_configuration {
     subnets          = var.private_subnet_ids
