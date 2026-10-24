@@ -267,6 +267,95 @@ def test_parse_error_does_not_echo_values():
 
 def test_validate_cognito_settings_requires_audience():
     with pytest.raises(ValueError):
-        validate_cognito_settings(IdpConfig(mode="cognito", issuer=ISS, audience=""))
+        IdpConfig(mode="cognito", issuer=ISS, audience="")
     validate_cognito_settings(CG)
     validate_cognito_settings(IdpConfig(mode="keycloak", issuer=ISS, audience=""))
+
+
+@pytest.mark.parametrize("mode", ["Cognito", "keyclaok", ""])
+def test_unknown_mode_rejected(mode):
+    with pytest.raises(ValueError):
+        IdpConfig(mode=mode, issuer=ISS, audience="a")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("prefix", ["mock-enterprise", "a/b", "x "])
+def test_scope_prefix_must_end_with_slash(prefix):
+    with pytest.raises(ValueError):
+        IdpConfig(mode="cognito", issuer=ISS, audience="a", scope_prefix=prefix)
+
+
+def test_config_is_immutable_and_hashable():
+    m = {"cid-1": "agent-a"}
+    cfg = IdpConfig(mode="cognito", issuer=ISS, audience="a", agent_client_map=m)
+    m["cid-2"] = "evil"
+    assert "cid-2" not in cfg.agent_client_map
+    with pytest.raises(TypeError):
+        cfg.agent_client_map["cid-3"] = "x"  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        cfg.audience = "b"  # type: ignore[misc]
+    hash(cfg)
+
+
+BAD_SCOPES = [
+    ["x core-read/invoke y"],
+    ["core-read/invoke"],
+    {"a": "q core-read/invoke q"},
+    5,
+    None,
+]
+
+
+@pytest.mark.parametrize("scope", BAD_SCOPES)
+def test_non_string_scope_rejected_cognito(rsa_key, now, scope):
+    claims = cog(now)
+    claims["scope"] = scope
+    claims = decode_token_claims(claims, rsa_key, CG)
+    assert identity_from_claims(claims, CG) is None
+
+
+@pytest.mark.parametrize("scope", BAD_SCOPES)
+def test_non_string_scope_rejected_keycloak(rsa_key, now, scope):
+    claims = kc(now)
+    claims["scope"] = scope
+    claims = decode_token_claims(claims, rsa_key, KC)
+    assert identity_from_claims(claims, KC) is None
+
+
+def decode_token_claims(claims, key, cfg):
+    # keep explicit None (a JSON null) in the payload
+    tok = jwt.encode(claims, key, algorithm="RS256")
+    return decode_token(tok, key.public_key(), cfg)
+
+
+def test_scope_split_on_ascii_space_only(make_token, rsa_key, now):
+    ident = run(make_token(cog(now, scope="core-read/invoke  a\u00a0b")), rsa_key, CG)
+    assert ident is not None
+    assert ident.scopes == {"core-read/invoke", "a\u00a0b"}
+
+
+def test_nbsp_does_not_forge_invoke_scope(make_token, rsa_key, now):
+    assert rejected(make_token(cog(now, scope="x\u00a0core-read/invoke")), rsa_key, CG)
+
+
+def test_scope_equal_to_prefix_dropped(make_token, rsa_key, now):
+    ident = run(make_token(cog(now, scope="mock-enterprise/ a:b")), rsa_key, MOCK)
+    assert ident is not None
+    assert ident.scopes == {"a:b"}
+
+
+@pytest.mark.parametrize("cid", [" ", "	", "  "])
+def test_whitespace_client_id_rejected(make_token, rsa_key, now, cid):
+    assert rejected(make_token(cog(now, client_id=cid)), rsa_key, CG)
+    assert rejected(make_token(kc(now, azp=cid)), rsa_key, KC)
+
+
+def test_empty_mapped_name_rejected(make_token, rsa_key, now):
+    cfg = IdpConfig(
+        mode="cognito", issuer=ISS, audience="core-read", agent_client_map={"cid-1": ""}
+    )
+    assert rejected(make_token(cog(now)), rsa_key, cfg)
+
+
+def test_parse_deeply_nested_is_value_error():
+    with pytest.raises(ValueError):
+        parse_agent_client_map("[" * 100000)
