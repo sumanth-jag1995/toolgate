@@ -31,8 +31,8 @@ resource "aws_cognito_resource_server" "this" {
 }
 
 # NOTE: Cognito access tokens carry `client_id` and `scope` but no `aud` or
-# `azp`. The MCP servers' audience check therefore needs an IdP-specific mode
-# in F2 (not changed in F1).
+# `azp`. The services run in IDP=cognito mode, where the audience check is
+# replaced by the `<audience>/invoke` scope and the caller id is `client_id`.
 resource "aws_cognito_user_pool_client" "this" {
   for_each     = var.clients
   name         = each.key

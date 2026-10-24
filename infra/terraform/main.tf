@@ -76,10 +76,12 @@ module "ecs" {
   collector_image  = module.observability.collector_image
   collector_config = module.observability.collector_config
 
-  db_endpoint        = module.data.db_endpoint
-  db_secret_arn      = module.data.db_secret_arn
-  client_secret_arns = module.cognito.client_secret_arns
-  issuer_url         = module.cognito.issuer_url
-  jwks_url           = module.cognito.jwks_url
-  token_url          = module.cognito.token_url
+  db_endpoint         = module.data.db_endpoint
+  db_secret_arn       = module.data.db_secret_arn
+  client_secret_arns  = module.cognito.client_secret_arns
+  app_client_ids      = module.cognito.app_client_ids
+  server_token_scopes = module.cognito.server_token_scopes
+  issuer_url          = module.cognito.issuer_url
+  jwks_url            = module.cognito.jwks_url
+  token_url           = module.cognito.token_url
 }

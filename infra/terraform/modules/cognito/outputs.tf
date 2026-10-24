@@ -21,3 +21,9 @@ output "token_url" {
 output "jwks_url" {
   value = "https://cognito-idp.${var.region}.amazonaws.com/${aws_cognito_user_pool.this.id}/.well-known/jwks.json"
 }
+
+# Space-separated scopes exactly as Cognito issues them, from the same variable
+# that defines the clients (single source for the MCP servers' TOKEN_SCOPE).
+output "server_token_scopes" {
+  value = { for n in ["core-read", "core-write", "comms"] : n => join(" ", var.clients[n]) }
+}

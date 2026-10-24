@@ -484,6 +484,88 @@ def test_ecs_secrets_only_by_reference():
     assert "enable_ecs_managed_tags = true" in ecs
 
 
+def _mcp_spec_text(ecs: str) -> str:
+    return ecs[ecs.index("mcp_spec = {") : ecs.index("eval_spec = {")]
+
+
+def test_gateway_task_sets_cognito_mode_and_client_map():
+    gateway = _spec_block(_ecs(), "gateway")
+    env = _names_in(gateway, "env")
+    assert {"GATEWAY_IDP", "GATEWAY_AGENT_CLIENT_MAP", "GATEWAY_TOKEN_SCOPE"} <= env
+    assert re.search(r'GATEWAY_IDP\s*=\s*"cognito"', gateway)
+    clients = _tf_map("clients")
+    scope = re.search(r'GATEWAY_TOKEN_SCOPE\s*=\s*"([^"]*)"', gateway)
+    assert scope
+    # The gateway's one outbound token carries exactly its client's scopes.
+    assert set(scope.group(1).split()) == clients["gateway"]
+    assert scope.group(1) == "core-read/invoke core-write/invoke comms/invoke"
+
+
+def test_agent_client_map_covers_exactly_the_three_agents_in_agents_yaml():
+    agents = yaml.safe_load((ROOT / "policy/agents.yaml").read_text("utf-8"))["agents"]
+    ecs = _ecs()
+    listed = re.search(r"agents\s*=\s*\[(.*?)\]", ecs, re.DOTALL)
+    assert listed
+    assert re.findall(r'"([\w-]+)"', listed.group(1)) == list(agents)
+    assert set(agents) == set(AGENTS)
+    gateway = _spec_block(ecs, "gateway")
+    assert (
+        "jsonencode({ for agent in local.agents : var.app_client_ids[agent] => agent })"
+        in gateway
+    )
+    # Only ids are mapped; no secret reaches the plain environment.
+    assert "client_secret" not in gateway.split("secrets = {")[0]
+
+
+def test_every_service_task_sets_idp_cognito():
+    ecs = _ecs()
+    gateway = _spec_block(ecs, "gateway")
+    mock = _spec_block(ecs, "mock-api")
+    mcp = _mcp_spec_text(ecs)
+    assert re.search(r'GATEWAY_IDP\s*=\s*"cognito"', gateway)
+    assert re.search(r"(?<![A-Z_])IDPs*=s*\"cognito\"", mock)
+    assert re.search(r'SCOPE_PREFIX\s*=\s*"mock-enterprise/"', mock)
+    assert re.search(r"(?<![A-Z_])IDPs*=s*\"cognito\"", mcp)
+    assert "TOKEN_SCOPE = var.server_token_scopes[n]" in mcp
+    # No task is left in the default (keycloak) mode.
+    assert ecs.count('"cognito"') == 3
+
+
+def test_server_token_scopes_match_cognito_clients():
+    out = _read("modules/cognito/outputs.tf")
+    assert re.search(
+        r'output "server_token_scopes"\s*\{\s*value = \{ for n in '
+        r'\["core-read", "core-write", "comms"\] : n => join\(" ", var.clients\[n\]\) \}',
+        out,
+    )
+    clients = _tf_map("clients")
+    realm = {c["clientId"]: c for c in _realm()["clients"]}
+    for server in ("core-read", "core-write", "comms"):
+        issued = {f"mock-enterprise/{s}" for s in realm[server]["defaultClientScopes"]}
+        assert clients[server] == issued
+    root = _read("main.tf")
+    assert "server_token_scopes = module.cognito.server_token_scopes" in root
+    assert "app_client_ids" in root
+    for var in ("server_token_scopes", "app_client_ids"):
+        assert f'variable "{var}"' in _read("modules/ecs/variables.tf")
+
+
+def test_no_client_secret_in_plain_environment():
+    ecs = _ecs()
+    for name in ("gateway", "mock-api"):
+        env = _names_in(_spec_block(ecs, name), "env")
+        assert not [n for n in env if re.search(r"SECRET|CLIENT_ID", n)], name
+    mcp_env_block = ecs[ecs.index("mcp_env = {") : ecs.index("mcp_spec = {")]
+    assert not re.search(r"SECRET|CLIENT_ID", mcp_env_block)
+    mcp = _mcp_spec_text(ecs)
+    assert "client_secret::" in mcp
+    env_part = mcp[mcp.index("env = merge") : mcp.index("secrets = {")]
+    assert not re.search(r"SECRET|CLIENT_ID", env_part)
+    gateway_env = _spec_block(ecs, "gateway").split("secrets = {")[0]
+    assert "GATEWAY_CLIENT_SECRET" not in gateway_env
+    assert "app_client_ids" in gateway_env  # ids only, never secrets
+
+
 def _run_tf(tf: str, *args: str) -> None:
     res = subprocess.run(
         [tf, f"-chdir={TF}", *args], capture_output=True, text=True, check=False

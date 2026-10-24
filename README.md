@@ -215,6 +215,20 @@ Three layers, each blocking:
 
 Dev secrets are generated into a gitignored `.env`; the committed Keycloak realm holds placeholders only. `toolgate-pin` 0.1.0 is published on [PyPI](https://pypi.org/project/toolgate-pin/) through that workflow (`uvx toolgate-pin demo`).
 
+## Identity provider modes
+
+Every service (gateway, MCP servers, mock-api) validates JWTs in one of two modes, chosen by `IDP` (`GATEWAY_IDP` for the gateway): `keycloak` (default) or `cognito`. Any other value fails at startup. Local compose uses `keycloak`; the Terraform stack sets `cognito` on every ECS task.
+
+| | `keycloak` | `cognito` |
+|---|---|---|
+| Checked claims | `iss`, `exp`, `aud` | `iss`, `exp`, `token_use == "access"`; no `aud` |
+| Caller id | `azp` | `client_id` |
+| Audience | `aud` claim | scope `<audience>/invoke` (gateway: `toolgate-gateway/invoke`; MCP server: `<mcp_audience>/invoke`) |
+| mock-api scopes | bare (`members:read`) | `SCOPE_PREFIX` (default `mock-enterprise/`) stripped from `mock-enterprise/members:read`; mock-api needs no invoke scope |
+| Outbound token | no `scope` parameter | `scope` = `TOKEN_SCOPE` (MCP servers) / `GATEWAY_TOKEN_SCOPE` (gateway) |
+
+Settings: `IDP`, `TOKEN_SCOPE`, `SCOPE_PREFIX` (MCP servers and mock-api, no prefix); `GATEWAY_IDP`, `GATEWAY_TOKEN_SCOPE`, `GATEWAY_AGENT_CLIENT_MAP` (gateway). `GATEWAY_AGENT_CLIENT_MAP` is a JSON object from Cognito app client id to the agent name in `policy/agents.yaml`; the allowlist, audit rows and traces use the mapped name, and an unmapped client id is rejected. In cognito mode a malformed or empty map fails at startup. Terraform builds the map from the `app_client_ids` output and sets each server's `TOKEN_SCOPE` from the `server_token_scopes` output; client secrets stay in task-definition `secrets`.
+
 ## Limits
 
 - **Overhead target not met** at 50 concurrent calls on a single host (see above). Per-call overhead at one worker is about 21 ms at p50.
@@ -222,7 +236,11 @@ Dev secrets are generated into a gitignored `.env`; the committed Keycloak realm
 - **Pinning catches changes, not malice from day one.** A tool that is malicious when first approved, or that behaves badly behind an honest description, passes; output scanning catches some of that. Approval by a human who does not read the diff defeats it. See the [threat model](packages/toolgate-pin/README.md#threat-model).
 - **`flag_output` and `deny_output`.** A flagged result is still delivered, and a denied one has already reached the downstream server with its arguments.
 - **AWS is unproven** (never applied), AgentCore comparison and Bedrock model ids are pending (F2).
-- **The services do not accept Cognito tokens yet.** The Terraform topology is correct, but F2 must add an IdP-specific auth mode before `make aws-up` is useful. Four gaps, each checked against the code: (a) Cognito access tokens carry no `aud`, which the gateway (`auth.py`) and mock-api (`mock_enterprise/auth.py`) require; (b) they carry no `azp`, which both also require, so a token is rejected even with the audience fixed; (c) Cognito's `client_id` is an opaque generated id, so the `policy/agents.yaml` allowlist (keyed `servicing`, `claims-intake`, `fraud-triage`) matches nothing without a mapping, for example from the `app_client_ids` output; (d) Cognito prefixes custom scopes with the resource server (`mock-enterprise/members:read`) while mock-api checks the bare `members:read`.
+- **Cognito mode is not yet verified against a real Cognito pool.** The services have an `IDP=cognito` mode (see [Identity provider modes](#identity-provider-modes)) covered by unit tests with generated keys only. Not yet checked: that Cognito returns the requested scopes for the `client_credentials` grant, and that it accepts the client secret in the form body. That is an F2 step.
+- **One outbound token for all downstreams.** The gateway uses a single client-credentials token for core-read, core-write and comms, so in cognito mode audience separation between servers is scope-based (`<server>/invoke`) and weaker than per-token `aud`.
+- **Cognito mode with no `TOKEN_SCOPE` starts and sends no scope**; Cognito then issues all the client's allowed scopes. `GATEWAY_AGENT_CLIENT_MAP` is ignored in keycloak mode.
+- **Audit identity in cognito mode.** The audit trail records `client_id` = the mapped agent name and `agent_id` = the raw Cognito client id (`sub`).
+- **Deployment note.** The client-to-agent mapping is by app client id only. Do not enable user-facing sign-in flows on a mapped app client that has the `toolgate-gateway/invoke` scope: any user signing in through it would become that agent.
 - Other Terraform limits (one shared service security group, RDS TLS without certificate verification, placeholder eval-target ports) are in [infra/terraform/README.md](infra/terraform/README.md#known-limits--f2).
 - Mock data is synthetic and the corpus is project-authored; this is a portfolio build, not a security product.
 

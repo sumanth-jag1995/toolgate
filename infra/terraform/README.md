@@ -49,15 +49,25 @@ private subnets and the service security group from the outputs:
 
 A custom `domain_name` needs a manual CNAME to `alb_dns_name`.
 
+## Identity provider modes
+
+Every ECS task runs with `IDP=cognito` (`GATEWAY_IDP` for the gateway); local compose uses the default `keycloak`. In cognito mode tokens are checked for `iss`, `exp` and `token_use == "access"` (no `aud`), the caller id is the `client_id` claim, and the audience is the scope `<audience>/invoke`. Environment set by the ecs module (plain `environment`, no secrets):
+
+- gateway: `GATEWAY_IDP`, `GATEWAY_AGENT_CLIENT_MAP` (JSON, built from the cognito `app_client_ids` output for exactly the agents in `policy/agents.yaml`), `GATEWAY_TOKEN_SCOPE=core-read/invoke core-write/invoke comms/invoke`.
+- core-read, core-write, comms: `IDP`, `TOKEN_SCOPE` (the cognito `server_token_scopes` output, derived from the same `clients` variable that defines the Cognito clients, e.g. `mock-enterprise/members:read`).
+- mock-api: `IDP`, `SCOPE_PREFIX=mock-enterprise/` (stripped before the bare-scope check).
+
+Client secrets stay in task-definition `secrets`; only client ids are in the map.
+
 ## Known limits / F2
 
 - One shared service security group (per-service groups later).
 - RDS connections use TLS without certificate verification.
-- The services do not accept Cognito tokens yet. The Terraform topology is correct, but F2 must add an IdP-specific auth mode in the gateway and mock-api before `make aws-up` is useful:
-  - Cognito access tokens have no `aud`, which both require (`jwt.decode` with `require: aud`).
-  - They have no `azp` either, which both require (`packages/toolgate-gateway/.../auth.py`, `services/mock-enterprise/.../auth.py`); Cognito supplies `client_id`.
-  - `client_id` is an opaque generated id, so the `policy/agents.yaml` allowlist (keyed `servicing`, `claims-intake`, `fraud-triage`) matches nothing without a mapping, for example from the `app_client_ids` output.
-  - Cognito prefixes custom scopes with the resource server (`mock-enterprise/members:read`), while mock-api checks the bare `members:read`.
+- Cognito mode is not yet verified against a real Cognito pool. The services have an `IDP=cognito` mode (see below) covered by unit tests with generated keys only. Not yet checked: that Cognito returns the requested scopes for the `client_credentials` grant, and that it accepts the client secret in the form body. That is an F2 step.
+- One outbound token for all downstreams. The gateway uses a single client-credentials token for core-read, core-write and comms, so in cognito mode audience separation between servers is scope-based (`<server>/invoke`) and weaker than per-token `aud`.
+- Cognito mode with no `TOKEN_SCOPE` starts and sends no scope; Cognito then issues all the client's allowed scopes. `GATEWAY_AGENT_CLIENT_MAP` is ignored in keycloak mode.
+- Audit identity in cognito mode. The audit trail records `client_id` = the mapped agent name and `agent_id` = the raw Cognito client id (`sub`).
+- Deployment note. The client-to-agent mapping is by app client id only. Do not enable user-facing sign-in flows on a mapped app client that has the `toolgate-gateway/invoke` scope: any user signing in through it would become that agent.
 - `eval_target_ports` are placeholders until the eval images exist.
 - The gateway image must bake `/policy`; `infra/docker/gateway.cloud.Dockerfile` does this and `scripts/push_images.sh` builds it.
 - mock-api runs `seed --reset` on every start.

@@ -149,10 +149,45 @@ def test_pin_readme_has_lifecycle_diagram():
         assert word in block.lower(), word
 
 
-def test_cognito_token_gaps_documented():
-    top = TOP.read_text(encoding="utf-8")
-    tf = (ROOT / "infra" / "terraform" / "README.md").read_text(encoding="utf-8")
-    for text in (top, tf):
-        for needle in ("`aud`", "`azp`", "client_id", "members:read"):
+def _tf_readme() -> str:
+    return (ROOT / "infra" / "terraform" / "README.md").read_text(encoding="utf-8")
+
+
+def test_readmes_describe_both_idp_modes():
+    for text in (TOP.read_text(encoding="utf-8"), _tf_readme()):
+        for needle in (
+            "IDP",
+            "keycloak",
+            "cognito",
+            "`client_id`",
+            "/invoke",
+            "GATEWAY_AGENT_CLIENT_MAP",
+            "GATEWAY_IDP",
+            "GATEWAY_TOKEN_SCOPE",
+            "TOKEN_SCOPE",
+            "SCOPE_PREFIX",
+            "not yet verified against a real Cognito pool",
+            "app client id",
+        ):
             assert needle in text, needle
-    assert "next task" not in tf and "Task 6" not in tf
+
+
+def test_readmes_no_longer_list_the_four_gaps_as_blocking():
+    top = TOP.read_text(encoding="utf-8")
+    tf = _tf_readme()
+    for text in (top, tf):
+        assert "do not accept Cognito tokens yet" not in text
+        assert "Four gaps" not in text
+        assert "must add an IdP-specific auth mode" not in text
+        assert "next task" not in text and "Task 6" not in text
+    # The remaining honest caveats stay documented in both places.
+    for text in (top, tf):
+        for needle in (
+            "not yet verified against a real Cognito pool",
+            "weaker than per-token `aud`",
+            "sends no scope",
+            "ignored in keycloak mode",
+            "agent_id",
+            "sign-in",
+        ):
+            assert needle in text, needle

@@ -13,6 +13,10 @@ locals {
 
   mcp_servers = ["core-read", "core-write", "comms"]
 
+  # Agents the gateway policy knows (policy/agents.yaml). The gateway maps each
+  # Cognito app client id to its agent name; client ids are not secrets.
+  agents = ["servicing", "claims-intake", "fraud-triage"]
+
   # Names of the secrets the gateway needs beyond its Cognito client:
   # gateway_db_password and audit_hmac_key (generated below).
   gateway_secret_arn = aws_secretsmanager_secret.gateway.arn
@@ -37,7 +41,10 @@ locals {
     for n in local.mcp_servers : n => {
       port    = { "core-read" = 8101, "core-write" = 8102, "comms" = 8103 }[n]
       command = ["python", "-m", "toolgate_mcp_servers.${replace(n, "-", "_")}"]
-      env     = local.mcp_env
+      env = merge(local.mcp_env, {
+        IDP         = "cognito"
+        TOKEN_SCOPE = var.server_token_scopes[n]
+      })
       secrets = {
         CLIENT_ID     = "${var.client_secret_arns[n]}:client_id::"
         CLIENT_SECRET = "${var.client_secret_arns[n]}:client_secret::"
@@ -73,6 +80,8 @@ locals {
         JWT_ISSUER   = var.issuer_url
         JWKS_URL     = var.jwks_url
         DATABASE_URL = "postgresql+asyncpg:///toolgate"
+        IDP          = "cognito"
+        SCOPE_PREFIX = "mock-enterprise/"
       })
       secrets = {
         PGUSER     = "${var.db_secret_arn}:username::"
@@ -95,6 +104,9 @@ locals {
         GATEWAY_POLICY_PATH         = "/policy/agents.yaml"
         GATEWAY_DOWNSTREAMS_PATH    = "/policy/gateway.cloud.yaml"
         GATEWAY_PUBLIC_URL          = local.public_url
+        GATEWAY_IDP                 = "cognito"
+        GATEWAY_AGENT_CLIENT_MAP    = jsonencode({ for agent in local.agents : var.app_client_ids[agent] => agent })
+        GATEWAY_TOKEN_SCOPE         = "core-read/invoke core-write/invoke comms/invoke"
         OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318"
         # App role only (INSERT on gateway.audit_log); its password is PGPASSWORD.
         DATABASE_URL = "postgresql:///toolgate"

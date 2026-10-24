@@ -87,3 +87,13 @@ variable "jwks_url" {
 variable "token_url" {
   type = string
 }
+
+variable "app_client_ids" {
+  description = "Cognito client name to app client id (not a secret)."
+  type        = map(string)
+}
+
+variable "server_token_scopes" {
+  description = "MCP server name to the space-separated mock-enterprise scopes its Cognito client is granted."
+  type        = map(string)
+}
