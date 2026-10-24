@@ -2411,6 +2411,7 @@ dev = [
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pyyaml" },
     { name = "ruff" },
     { name = "testcontainers" },
 ]
@@ -2424,6 +2425,7 @@ dev = [
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "ruff" },
     { name = "testcontainers", extras = ["postgres"] },
 ]
