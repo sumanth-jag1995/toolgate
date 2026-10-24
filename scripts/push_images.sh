@@ -86,11 +86,11 @@ for n in "${NAMES[@]}"; do
   ref="$url:$TAG"
   if [[ "$n" == "gateway" ]]; then
     base="toolgate-gateway-base:$TAG"
-    run docker build --platform linux/amd64 -f "$(dockerfile_for "$n")" -t "$base" "$ROOT"
-    run docker build --platform linux/amd64 -f infra/docker/gateway.cloud.Dockerfile \
+    run docker build --platform linux/amd64 -f "$ROOT/$(dockerfile_for "$n")" -t "$base" "$ROOT"
+    run docker build --platform linux/amd64 -f "$ROOT/infra/docker/gateway.cloud.Dockerfile" \
       --build-arg "BASE_IMAGE=$base" -t "$ref" "$ROOT"
   else
-    run docker build --platform linux/amd64 -f "$(dockerfile_for "$n")" -t "$ref" "$ROOT"
+    run docker build --platform linux/amd64 -f "$ROOT/$(dockerfile_for "$n")" -t "$ref" "$ROOT"
   fi
   run docker push "$ref"
   lines+=("  \"$n\" = \"$ref\"")

@@ -147,3 +147,12 @@ def test_pin_readme_has_lifecycle_diagram():
     assert block.lstrip().startswith(("stateDiagram-v2", "flowchart"))
     for word in ("pin", "verify", "drift", "quarantine", "approve"):
         assert word in block.lower(), word
+
+
+def test_cognito_token_gaps_documented():
+    top = TOP.read_text(encoding="utf-8")
+    tf = (ROOT / "infra" / "terraform" / "README.md").read_text(encoding="utf-8")
+    for text in (top, tf):
+        for needle in ("`aud`", "`azp`", "client_id", "members:read"):
+            assert needle in text, needle
+    assert "next task" not in tf and "Task 6" not in tf

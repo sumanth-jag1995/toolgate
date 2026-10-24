@@ -69,6 +69,16 @@ def unpack_dist(dist_dir: Path, dest: Path) -> dict[str, list[str]]:
     return {kind: sorted(files) for kind, files in found.items()}
 
 
+def stray_files(dist_dir: Path) -> list[str]:
+    """Findings for non-hidden entries other than the one wheel and one sdist."""
+    return sorted(
+        f"unexpected file in {dist_dir.name}: {entry.name}"
+        for entry in dist_dir.iterdir()
+        if not entry.name.startswith(".")
+        and not (entry.is_file() and entry.name.endswith((".whl", ".tar.gz")))
+    )
+
+
 def read_manifest(path: Path) -> dict[str, set[str]]:
     """Parse `wheel: <path>` / `sdist: <path>` lines; `#` starts a comment."""
     expected: dict[str, set[str]] = {kind: set() for kind in KINDS}
@@ -162,7 +172,7 @@ def main(argv: list[str]) -> int:
         with tempfile.TemporaryDirectory(prefix="toolgate-artifacts-") as tmp:
             root = Path(tmp)
             found = unpack_dist(args.dist_dir, root)
-            problems = compare_manifest(found, expected)
+            problems = compare_manifest(found, expected) + stray_files(args.dist_dir)
             if not args.skip_gitleaks:
                 problems += scan_secrets(root)
     except (ArtifactCheckError, OSError, zipfile.BadZipFile, tarfile.TarError) as exc:

@@ -181,6 +181,12 @@ def test_aws_up_real_flow_two_stage_with_fakes(tmp_path: Path, clean_images_file
         "--password-stdin" in c and "pw" not in c.split() for c in logins
     )
     assert '"gateway" = ' in IMAGES_FILE.read_text()
+    assert "gateway-migrate" in r.stderr and "infra/terraform/README.md" in r.stderr
+    builds = [c for c in calls if c.startswith("docker build")]
+    assert builds
+    for c in builds:
+        parts = c.split()
+        assert parts[parts.index("-f") + 1].startswith("/"), c
 
 
 def test_aws_up_skips_stage_one_when_repos_exist(tmp_path: Path, clean_images_file):
@@ -292,5 +298,10 @@ def test_image_names_come_from_terraform_output_keys(tmp_path: Path, clean_image
 
 def test_dockerignore_excludes_secrets():
     text = (ROOT / ".dockerignore").read_text()
-    for pat in (".env", ".venv", "*.tfstate*", ".git", ".superpowers"):
+    for pat in ("**/.env", "**/.env.*", ".venv", "*.tfstate*", ".git", ".superpowers"):
         assert pat in text.splitlines()
+
+
+def test_gitignore_ignores_env_variants_but_keeps_example():
+    lines = (ROOT / ".gitignore").read_text().splitlines()
+    assert ".env.*" in lines and "!.env.example" in lines

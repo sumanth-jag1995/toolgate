@@ -95,6 +95,20 @@ def test_cli_fails_on_stray_env_file(tmp_path, capsys):
     assert ".env" in capsys.readouterr().out
 
 
+def test_cli_rejects_stray_file_in_dist(tmp_path, capsys):
+    dist = tmp_path / "dist"
+    _make_dist(dist, {"toolgate_pin/__init__.py": b""}, {"pkg-0.1.0/README.md": b"hi"})
+    (dist / "notes.txt").write_text("x", encoding="utf-8")
+    (dist / ".gitignore").write_text("*", encoding="utf-8")  # hidden: allowed
+    manifest = tmp_path / "manifest.txt"
+    manifest.write_text(
+        "wheel: toolgate_pin/__init__.py\nsdist: README.md\n", encoding="utf-8"
+    )
+    assert main([str(dist), "--manifest", str(manifest), "--skip-gitleaks"]) == 1
+    out = capsys.readouterr().out
+    assert "notes.txt" in out and ".gitignore" not in out
+
+
 def test_cli_clean_passes(tmp_path):
     dist = tmp_path / "dist"
     _make_dist(dist, {"toolgate_pin/__init__.py": b""}, {"pkg-0.1.0/README.md": b"hi"})

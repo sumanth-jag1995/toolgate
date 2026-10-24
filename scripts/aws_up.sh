@@ -47,3 +47,7 @@ if ! printf '%s' "$urls" | grep -q '"gateway"'; then
 fi
 bash "$ROOT/scripts/push_images.sh"
 "$TF" -chdir="$TF_DIR" apply
+cat >&2 <<'REMINDER'
+Next: run the gateway-migrate task once before the gateway will work
+(aws ecs run-task ...). See "Running the migration" in infra/terraform/README.md.
+REMINDER

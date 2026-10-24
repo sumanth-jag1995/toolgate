@@ -124,7 +124,7 @@ At 50 workers the gateway's median is 455 ms slower than the direct path. The p9
 
 ## Results: detection and false positives
 
-`toolgate-pin bench` on the test split of corpus v1 (30 malicious variants, 50 benign definitions), rules and classifier tiers. The judge tier has not been run live.
+`toolgate-pin bench` on the test split of corpus v1 (30 attack variants, 6 of which also carry an output sample for the runtime scanner, and 50 benign definitions), rules and classifier tiers. The judge tier has not been run live.
 
 | family | n | rules | +classifier | caught by pin |
 |---|--:|--:|--:|--:|
@@ -221,7 +221,9 @@ Dev secrets are generated into a gitignored `.env`; the committed Keycloak realm
 - **Canary matrix pending**, so there is no measured leak rate with or without the gateway yet. When it runs, a "no leak" is a lower bound: split or reformatted values are not detected, and results are specific to two free-tier models.
 - **Pinning catches changes, not malice from day one.** A tool that is malicious when first approved, or that behaves badly behind an honest description, passes; output scanning catches some of that. Approval by a human who does not read the diff defeats it. See the [threat model](packages/toolgate-pin/README.md#threat-model).
 - **`flag_output` and `deny_output`.** A flagged result is still delivered, and a denied one has already reached the downstream server with its arguments.
-- **AWS is unproven** (never applied), AgentCore comparison and Bedrock model ids are pending (F2). Known Terraform limits are in [infra/terraform/README.md](infra/terraform/README.md#known-limits--f2): one shared service security group, RDS TLS without certificate verification, Cognito tokens lacking `aud`, and placeholder eval-target ports.
+- **AWS is unproven** (never applied), AgentCore comparison and Bedrock model ids are pending (F2).
+- **The services do not accept Cognito tokens yet.** The Terraform topology is correct, but F2 must add an IdP-specific auth mode before `make aws-up` is useful. Four gaps, each checked against the code: (a) Cognito access tokens carry no `aud`, which the gateway (`auth.py`) and mock-api (`mock_enterprise/auth.py`) require; (b) they carry no `azp`, which both also require, so a token is rejected even with the audience fixed; (c) Cognito's `client_id` is an opaque generated id, so the `policy/agents.yaml` allowlist (keyed `servicing`, `claims-intake`, `fraud-triage`) matches nothing without a mapping, for example from the `app_client_ids` output; (d) Cognito prefixes custom scopes with the resource server (`mock-enterprise/members:read`) while mock-api checks the bare `members:read`.
+- Other Terraform limits (one shared service security group, RDS TLS without certificate verification, placeholder eval-target ports) are in [infra/terraform/README.md](infra/terraform/README.md#known-limits--f2).
 - Mock data is synthetic and the corpus is project-authored; this is a portfolio build, not a security product.
 
 ## License
