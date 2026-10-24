@@ -43,7 +43,8 @@ def build_server(
                 issuer_url=settings.jwt_issuer,
                 resource_server_url=f"http://localhost:{settings.port}",
                 required_scopes=[],
-                # JwtTokenVerifier checks `aud` itself.
+                # JwtTokenVerifier checks the audience itself (`aud` in keycloak mode, the
+                # `<name>/invoke` scope in cognito mode).
                 validate_token_resource=False,
             ),
         )
