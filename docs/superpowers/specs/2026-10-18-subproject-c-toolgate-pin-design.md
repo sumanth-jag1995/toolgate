@@ -123,11 +123,12 @@ from toolgate_pin import Pinner, LockfileStore
 
 pinner = Pinner(LockfileStore("toolgate.lock.json"))
 
+
 async def list_tools_for_agent(server_id, session):
     tools = (await session.list_tools()).tools
-    result = pinner.verify(server_id, tools)     # never raises on drift
+    result = pinner.verify(server_id, tools)  # never raises on drift
     for q in result.quarantined:
-        alert(q.tool_name, q.reason, q.diff)     # caller's choice
+        alert(q.tool_name, q.reason, q.diff)  # caller's choice
     return result.allowed
 ```
 

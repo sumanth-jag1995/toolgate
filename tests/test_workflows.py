@@ -3,7 +3,6 @@
 import re
 from pathlib import Path
 
-import pytest
 import yaml
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
@@ -38,6 +37,9 @@ def test_release_publish_needs_build_and_scans() -> None:
     assert "--manifest" in build
     assert "--skip-gitleaks" not in build
     assert "gitleaks" in build
+    runs = [s["run"] for s in jobs["build"]["steps"] if "run" in s]
+    check = [r for r in runs if "check_artifacts.py" in r]
+    assert len(check) == 1 and "--skip-gitleaks" not in check[0]
 
 
 def test_only_publish_job_has_id_token_write() -> None:
@@ -72,8 +74,11 @@ def test_release_dry_run_never_publishes() -> None:
     dispatch = triggers["workflow_dispatch"]["inputs"]["dry_run"]
     assert dispatch["type"] == "boolean" and dispatch["default"] is True
     condition = wf["jobs"]["publish"]["if"]
-    assert "refs/tags/v" in condition
-    assert "push" in condition
+    parts = [p.strip() for p in condition.split("&&")]
+    assert parts == [
+        "github.event_name == 'push'",
+        "startsWith(github.ref, 'refs/tags/v')",
+    ]
 
 
 def test_publish_job_has_no_other_third_party_steps() -> None:
@@ -83,15 +88,51 @@ def test_publish_job_has_no_other_third_party_steps() -> None:
     assert not any("run" in s for s in steps)
 
 
-def _all_uses() -> list[str]:
+def _uses(only_job: str | None = None) -> list[str]:
     found = []
     for path in sorted(WORKFLOWS.glob("*.yml")):
-        for job in yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"].values():
-            found += [s["uses"] for s in job["steps"] if "uses" in s]
+        jobs = yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"]
+        for name, job in jobs.items():
+            if only_job is None or name == only_job:
+                found += [s["uses"] for s in job["steps"] if "uses" in s]
     return found
 
 
-@pytest.mark.parametrize("ref", _all_uses())
-def test_actions_are_pinned(ref: str) -> None:
-    _, _, version = ref.partition("@")
-    assert re.fullmatch(r"v\d+(\.\d+){0,2}|[0-9a-f]{40}", version), ref
+def test_actions_are_pinned() -> None:
+    refs = _uses()
+    assert refs
+    for ref in refs:
+        version = ref.partition("@")[2]
+        assert re.fullmatch(r"v\d+(\.\d+){0,2}|[0-9a-f]{40}", version), ref
+
+
+def test_publish_actions_are_sha_pinned() -> None:
+    refs = _uses("publish")
+    assert len(refs) == 2
+    for ref in refs:
+        assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", ref), ref
+
+
+def test_gitleaks_checksum_hardcoded() -> None:
+    for name in ("ci.yml", "release.yml"):
+        text = (WORKFLOWS / name).read_text(encoding="utf-8")
+        assert "checksums.txt" not in text
+        assert re.search(
+            r'echo "[0-9a-f]{64}  gitleaks_8\.30\.1_linux_x64\.tar\.gz" \| sha256sum -c -',
+            text,
+        )
+
+
+def test_release_permissions_default_empty() -> None:
+    assert _load("release.yml")["permissions"] == {}
+
+
+def test_release_tag_matches_version_guard() -> None:
+    steps = _load("release.yml")["jobs"]["build"]["steps"]
+    guard = [s for s in steps if s.get("name") == "Tag must match package version"]
+    assert len(guard) == 1
+    g = guard[0]
+    assert g["if"] == "github.ref_type == 'tag'"
+    assert g["env"]["REF_NAME"] == "${{ github.ref_name }}"
+    assert "${{" not in g["run"]
+    assert "pyproject.toml" in g["run"] and "$REF_NAME" in g["run"]

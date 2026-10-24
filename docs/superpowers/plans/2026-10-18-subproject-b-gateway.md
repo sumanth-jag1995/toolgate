@@ -118,12 +118,39 @@ scripts/pin_servers.py  scripts/smoke_b.py  README.md (section)
 
 - [ ] **Step 1: Write failing tests**
 ```python
-def test_glob_and_exact(): a = Allowlist.load(AGENTS); assert a.allowed("servicing", "core-read.get_claim_status") and a.allowed("servicing", "core-write.add_claim_note")
-def test_deny_by_default(): assert not a.allowed("servicing", "core-write.log_claim") and not a.allowed("unknown-client", "core-read.get_claim_status")
-def test_fraud_triage_read_only(): assert not any(a.allowed("fraud-triage", f"core-write.{t}") for t in ("log_claim", "add_claim_note"))
-def test_glob_does_not_cross_namespace(): assert not a.allowed("fraud-triage", "core-readx.get_claim_status")
+def test_glob_and_exact():
+    a = Allowlist.load(AGENTS)
+    assert a.allowed("servicing", "core-read.get_claim_status") and a.allowed(
+        "servicing", "core-write.add_claim_note"
+    )
+
+
+def test_deny_by_default():
+    assert not a.allowed("servicing", "core-write.log_claim") and not a.allowed(
+        "unknown-client", "core-read.get_claim_status"
+    )
+
+
+def test_fraud_triage_read_only():
+    assert not any(
+        a.allowed("fraud-triage", f"core-write.{t}")
+        for t in ("log_claim", "add_claim_note")
+    )
+
+
+def test_glob_does_not_cross_namespace():
+    assert not a.allowed("fraud-triage", "core-readx.get_claim_status")
+
+
 def test_malformed_policy_raises(tmp_path): ...  # PolicyError
-def test_split_namespaced(): assert split_namespaced("core-read.get_claim_status") == ("core-read", "get_claim_status") and split_namespaced("nodot") is None
+def test_split_namespaced():
+    assert (
+        split_namespaced("core-read.get_claim_status")
+        == ("core-read", "get_claim_status")
+        and split_namespaced("nodot") is None
+    )
+
+
 def test_bad_downstream_id_rejected(tmp_path): ...
 ```
 - [ ] **Step 2: Run, expect FAIL** — `uv run pytest packages/toolgate-gateway -q`

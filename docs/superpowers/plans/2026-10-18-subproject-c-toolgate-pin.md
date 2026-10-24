@@ -91,37 +91,71 @@ Root `pyproject.toml` gets `packages/toolgate-pin/tests` added to `testpaths`.
 - [ ] **Step 1: Write failing tests** in `test_canon.py`:
 
 ```python
-BASE = {"name": "get_claim_status", "description": "Returns  the status\n of a claim.",
-        "inputSchema": {"type": "object", "properties": {"claim_id": {"type": "string"}, "b": {"type": "string"}},
-                        "required": ["claim_id", "b"], "additionalProperties": False}}
+BASE = {
+    "name": "get_claim_status",
+    "description": "Returns  the status\n of a claim.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {"claim_id": {"type": "string"}, "b": {"type": "string"}},
+        "required": ["claim_id", "b"],
+        "additionalProperties": False,
+    },
+}
+
 
 def test_key_order_whitespace_and_required_order_hash_equal():
-    variant = {"inputSchema": {"additionalProperties": False, "required": ["b", "claim_id"],
-               "properties": {"b": {"type": "string"}, "claim_id": {"type": "string"}}, "type": "object"},
-               "description": "Returns the status of a claim.", "name": "get_claim_status"}
+    variant = {
+        "inputSchema": {
+            "additionalProperties": False,
+            "required": ["b", "claim_id"],
+            "properties": {"b": {"type": "string"}, "claim_id": {"type": "string"}},
+            "type": "object",
+        },
+        "description": "Returns the status of a claim.",
+        "name": "get_claim_status",
+    }
     assert pin_hash(BASE) == pin_hash(variant)
 
-def test_nfc_nfd_equal():
-    assert pin_hash({**BASE, "description": "café"}) == pin_hash({**BASE, "description": "café"})
 
-def test_nfkc_not_applied():           # fullwidth A must not fold to A
-    assert pin_hash({**BASE, "description": "Ａ"}) != pin_hash({**BASE, "description": "A"})
+def test_nfc_nfd_equal():
+    assert pin_hash({**BASE, "description": "café"}) == pin_hash(
+        {**BASE, "description": "café"}
+    )
+
+
+def test_nfkc_not_applied():  # fullwidth A must not fold to A
+    assert pin_hash({**BASE, "description": "Ａ"}) != pin_hash(
+        {**BASE, "description": "A"}
+    )
+
 
 def test_cf_characters_change_hash():
-    assert pin_hash({**BASE, "description": "ok​"}) != pin_hash({**BASE, "description": "ok"})
-    assert pin_hash({**BASE, "description": "ok\U000E0049"}) != pin_hash({**BASE, "description": "ok"})
+    assert pin_hash({**BASE, "description": "ok​"}) != pin_hash(
+        {**BASE, "description": "ok"}
+    )
+    assert pin_hash({**BASE, "description": "ok\U000e0049"}) != pin_hash(
+        {**BASE, "description": "ok"}
+    )
+
 
 def test_enum_order_preserved():
     a = {**BASE, "inputSchema": {"type": "string", "enum": ["a", "b"]}}
     b = {**BASE, "inputSchema": {"type": "string", "enum": ["b", "a"]}}
     assert pin_hash(a) != pin_hash(b)
 
+
 def test_meta_excluded_and_none_dropped():
     assert pin_hash({**BASE, "_meta": {"x": 1}, "title": None}) == pin_hash(BASE)
 
-def test_tool_object_and_dict_hash_equal():                       # Review Focus 1
-    tool = mcp.types.Tool(name=BASE["name"], description=BASE["description"], inputSchema=BASE["inputSchema"])
+
+def test_tool_object_and_dict_hash_equal():  # Review Focus 1
+    tool = mcp.types.Tool(
+        name=BASE["name"],
+        description=BASE["description"],
+        inputSchema=BASE["inputSchema"],
+    )
     assert pin_hash(tool) == pin_hash(BASE)
+
 
 def test_hash_format():
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", pin_hash(BASE))
@@ -617,7 +651,11 @@ def test_wheel_contains_corpus_and_runs_demo(tmp_path):
 - [ ] **Step 1: Write failing tests**:
 
 ```python
-pytestmark = pytest.mark.skipif(not classifier.available(), reason="classifier extra not installed")
+pytestmark = pytest.mark.skipif(
+    not classifier.available(), reason="classifier extra not installed"
+)
+
+
 def test_scores_injection_higher_than_benign(): ...  # dev items: malicious mean > benign mean
 def test_bench_includes_classifier_column(): ...
 def test_approve_classifier_flag_runs_tier(): ...
@@ -626,7 +664,9 @@ def test_approve_classifier_flag_runs_tier(): ...
 plus one test that runs without the extra:
 
 ```python
-def test_bench_without_extra_lists_classifier_unavailable(monkeypatch): ...  # available() patched False → "unavailable: classifier"
+def test_bench_without_extra_lists_classifier_unavailable(
+    monkeypatch,
+): ...  # available() patched False → "unavailable: classifier"
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** — **Step 3: Implement**, `uv sync --all-packages --extra classifier` (or the package's extra), tune on dev, run the test split once. — **Step 4: Run, expect PASS.**

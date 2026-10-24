@@ -10,6 +10,8 @@ on:
         type: boolean
         default: true
 
+permissions: {}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,11 +25,18 @@ jobs:
           set -euo pipefail
           base=https://github.com/gitleaks/gitleaks/releases/download/v8.30.1
           curl -sSfL -O "$base/gitleaks_8.30.1_linux_x64.tar.gz"
-          curl -sSfL -O "$base/gitleaks_8.30.1_checksums.txt"
-          grep ' gitleaks_8.30.1_linux_x64.tar.gz$' gitleaks_8.30.1_checksums.txt | sha256sum -c -
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks_8.30.1_linux_x64.tar.gz" | sha256sum -c -
           tar -xzf gitleaks_8.30.1_linux_x64.tar.gz gitleaks
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
-          rm -f gitleaks gitleaks_8.30.1_*
+          rm -f gitleaks gitleaks_8.30.1_linux_x64.tar.gz
+      - name: Tag must match package version
+        if: github.ref_type == 'tag'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(python3 -c "import tomllib;print(tomllib.load(open('packages/toolgate-pin/pyproject.toml','rb'))['project']['version'])")
+          test "$REF_NAME" = "v$version" || { echo "tag $REF_NAME != v$version"; exit 1; }
       - run: uv sync --all-packages --all-extras
       - name: Build toolgate-pin
         run: uv build --package toolgate-pin --out-dir dist
@@ -49,10 +58,10 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@v1.12.4
+      - uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
         with:
           packages-dir: dist/
