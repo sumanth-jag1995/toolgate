@@ -15,6 +15,7 @@ members = [
     "toolgate",
     "toolgate-eval",
     "toolgate-gateway",
+    "toolgate-idp",
     "toolgate-mcp-servers",
     "toolgate-pin",
 ]
@@ -2497,6 +2498,17 @@ requires-dist = [
     { name = "toolgate-pin", editable = "packages/toolgate-pin" },
     { name = "uvicorn", specifier = ">=0.54.0" },
 ]
+
+[[package]]
+name = "toolgate-idp"
+version = "0.1.0"
+source = { editable = "packages/toolgate-idp" }
+dependencies = [
+    { name = "pyjwt", extra = ["crypto"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.1" }]
 
 [[package]]
 name = "toolgate-mcp-servers"

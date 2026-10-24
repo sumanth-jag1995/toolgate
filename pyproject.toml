@@ -26,7 +26,7 @@ members = ["services/*", "packages/*", "eval"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
-testpaths = ["tests", "services/mock-enterprise/tests", "services/mcp-servers/tests", "packages/toolgate-pin/tests", "packages/toolgate-gateway/tests", "packages/servicing-agent/tests", "eval/tests"]
+testpaths = ["tests", "services/mock-enterprise/tests", "services/mcp-servers/tests", "packages/toolgate-pin/tests", "packages/toolgate-gateway/tests", "packages/toolgate-idp/tests", "packages/servicing-agent/tests", "eval/tests"]
 addopts = "--import-mode=importlib"
 markers = [
     "slow: builds artifacts or shells out to uv (deselect with -m 'not slow')",
