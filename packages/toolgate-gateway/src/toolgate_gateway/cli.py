@@ -28,7 +28,7 @@ from toolgate_pin.reveal import ascii_brackets, one_line, safe_print
 
 from toolgate_gateway.app import build_app
 from toolgate_gateway.audit import AuditWriter
-from toolgate_gateway.auth import ClientCredentialsAuth, build_verifier
+from toolgate_gateway.auth import build_auth, build_verifier
 from toolgate_gateway.core import GatewayCore
 from toolgate_gateway.db import create_pool, migrate
 from toolgate_gateway.downstreams import load_downstreams
@@ -59,12 +59,7 @@ async def _serve(settings: GatewaySettings) -> None:
     allowlist = Allowlist.load(settings.policy_path)
     configs = load_downstreams(settings.downstreams_path)
     verifier = build_verifier(settings)
-    auth = ClientCredentialsAuth(
-        settings.token_url,
-        settings.client_id,
-        settings.client_secret,
-        scope=settings.token_scope if settings.idp == "cognito" else None,
-    )
+    auth = build_auth(settings)
     try:
         # min_size=0: creating the pool does not connect, so the gateway
         # starts while Postgres is down; calls are refused until the audit

@@ -16,6 +16,7 @@ from toolgate_gateway.auth import (
     AgentTokenVerifier,
     ClientCredentialsAuth,
     DownstreamAuthError,
+    build_auth,
     build_verifier,
 )
 from toolgate_gateway.core import GatewayCore
@@ -149,7 +150,7 @@ def make_cognito_token(rsa_key):
         now = int(time.time())
         claims = {
             "iss": iss,
-            "sub": "cog-sub-1",
+            "sub": client_id,  # Cognito client-credentials tokens: sub == client id
             "client_id": client_id,
             "token_use": token_use,
             "scope": " ".join(scopes),
@@ -180,7 +181,7 @@ async def test_cognito_valid_token_maps_client_to_agent(
     at = await cognito_verifier.verify_token(make_cognito_token())
     assert at is not None
     assert at.client_id == "servicing"
-    assert at.subject == "cog-sub-1"
+    assert at.subject == "cog-servicing"
     assert at.resource == AUDIENCE
     assert GW_SCOPE in at.scopes
 
@@ -397,6 +398,37 @@ async def test_cc_auth_sends_scope_only_when_set():
     assert bodies[1] == base + "&scope=a%2Finvoke+b%2Finvoke"
 
 
+@pytest.mark.parametrize(
+    ("kw", "scope_sent"),
+    [
+        (
+            {
+                "idp": "cognito",
+                "agent_client_map": CLIENT_MAP,
+                "token_scope": "a/invoke",
+            },
+            True,
+        ),
+        ({"token_scope": "a/invoke"}, False),
+        ({"idp": "cognito", "agent_client_map": CLIENT_MAP}, False),
+    ],
+)
+async def test_build_auth_scope_wiring(tmp_path, kw, scope_sent):
+    bodies: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(request.content.decode())
+        return httpx.Response(200, json={"access_token": "t", "expires_in": 300})
+
+    auth = build_auth(_settings(tmp_path, **kw), transport=httpx.MockTransport(handler))
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200)), auth=auth
+    ) as client:
+        await client.get("http://ds.test/x")
+    assert ("scope=a%2Finvoke" in bodies[0]) is scope_sent
+    assert ("scope=" in bodies[0]) is scope_sent
+
+
 async def test_cc_auth_error_never_carries_secret():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, text="bad client_secret=s3cret")
@@ -476,6 +508,8 @@ async def test_cognito_agent_allowlist_applies_to_mapped_agent(
         assert factory.calls == []
         [rec] = audit.records
         assert (rec.client_id, rec.decision) == ("fraud-triage", "deny_scope")
+        # The raw Cognito client id stays in the audit trail as agent_id.
+        assert rec.agent_id == "cog-triage"
 
         # A raw, unmapped Cognito client id is not an agent: 401.
         stranger = make_cognito_token(client_id="x")

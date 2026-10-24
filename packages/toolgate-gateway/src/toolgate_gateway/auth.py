@@ -132,6 +132,20 @@ def build_verifier(settings: Any) -> AgentTokenVerifier:
     )
 
 
+def build_auth(
+    settings: Any, *, transport: httpx.AsyncBaseTransport | None = None
+) -> "ClientCredentialsAuth":
+    """The outbound client-credentials auth; scope is sent in cognito mode only."""
+    scope = settings.token_scope if settings.idp == "cognito" else None
+    return ClientCredentialsAuth(
+        settings.token_url,
+        settings.client_id,
+        settings.client_secret,
+        scope=scope or None,
+        transport=transport,
+    )
+
+
 class ClientCredentialsAuth(httpx.Auth):
     """httpx auth adding the gateway's client-credentials bearer token.
 
