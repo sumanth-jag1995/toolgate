@@ -6,5 +6,3 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 COPY --chown=root:root policy/ /policy/
-# The cloud downstream map is also available under the conventional name.
-COPY --chown=root:root policy/gateway.cloud.yaml /policy/gateway.yaml

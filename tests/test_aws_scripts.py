@@ -176,6 +176,10 @@ def test_aws_up_real_flow_two_stage_with_fakes(tmp_path: Path, clean_images_file
     assert target < push < full
     pushes = [c for c in calls if c.startswith("docker push")]
     assert len(pushes) == 5 and all(c.endswith(":t1") for c in pushes)
+    logins = [c for c in calls if c.startswith("docker login")]
+    assert logins and all(
+        "--password-stdin" in c and "pw" not in c.split() for c in logins
+    )
     assert '"gateway" = ' in IMAGES_FILE.read_text()
 
 
@@ -191,7 +195,9 @@ def test_terraform_bin_is_honoured(tmp_path: Path):
     _fake(tmp_path, "aws", "exit 0")
     _fake(tmp_path, "terraform", "exit 99")
     r = _run("aws_down.sh", ["--dry-run"], _env(tmp_path, {"TERRAFORM_BIN": "my-tf"}))
+    assert r.returncode == 0
     assert "my-tf -chdir" in r.stdout
+    assert _calls(tmp_path) == []  # default terraform (exit 99) never ran
 
 
 def test_scripts_never_echo_env():
@@ -205,7 +211,7 @@ def test_gateway_cloud_dockerfile_references_policy_files():
     text = (ROOT / "infra/docker/gateway.cloud.Dockerfile").read_text()
     assert "ARG BASE_IMAGE" in text and "FROM ${BASE_IMAGE}" in text
     assert "COPY --chown=root:root policy/ /policy/" in text
-    assert "policy/gateway.cloud.yaml /policy/gateway.yaml" in text
+    assert "gateway.yaml" not in text.replace("gateway.cloud.yaml", "")
     for f in ("gateway.cloud.yaml", "agents.yaml", "toolgate.lock.json"):
         assert (ROOT / "policy" / f).is_file()
     tf = (ROOT / "infra/terraform/modules/ecs/main.tf").read_text()
@@ -220,3 +226,71 @@ def test_gateway_cloud_dockerfile_references_policy_files():
 def test_makefile_targets():
     mk = (ROOT / "Makefile").read_text()
     assert "scripts/aws_up.sh" in mk and "scripts/aws_down.sh" in mk
+
+
+def test_scripts_are_executable_in_git_index():
+    r = subprocess.run(
+        ["git", "ls-files", "-s", "scripts/*.sh"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=ROOT,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        pytest.skip("not a git checkout")
+    for line in r.stdout.splitlines():
+        assert line.startswith("100755"), line
+
+
+def test_aws_down_runs_leftovers_even_when_destroy_fails(tmp_path: Path):
+    _fake(tmp_path, "terraform", 'echo "terraform $*" >> "$FAKE_LOG"; exit 1')
+    _fake(
+        tmp_path,
+        "aws",
+        'if [[ "$*" == *sts* ]]; then exit 0; fi; echo "arn:aws:s3:::left"',
+    )
+    r = _run("aws_down.sh", [], _env(tmp_path, {"LEFTOVERS_RETRY_SLEEP": "0"}))
+    assert r.returncode != 0
+    assert "arn:aws:s3:::left" in r.stdout
+    assert "destroy rc=1" in r.stderr
+
+
+def test_leftovers_task_definitions_are_informational(tmp_path: Path):
+    _fake(tmp_path, "aws", 'echo "arn:aws:ecs:us-east-1:1:task-definition/x:1"')
+    r = _run("aws_leftovers.sh", [], _env(tmp_path, {"LEFTOVERS_RETRY_SLEEP": "0"}))
+    assert r.returncode == 0
+    assert "inactive ECS task definitions (no cost, informational)" in r.stdout
+    assert "task-definition/x:1" in r.stdout
+
+
+def test_leftovers_retries_then_clears(tmp_path: Path):
+    _fake(
+        tmp_path,
+        "aws",
+        'echo x >> "$FAKE_LOG"; if [[ $(wc -l < "$FAKE_LOG") -ge 3 ]]; then echo None; '
+        "else echo arn:aws:s3:::a; fi",
+    )
+    r = _run("aws_leftovers.sh", [], _env(tmp_path, {"LEFTOVERS_RETRY_SLEEP": "0"}))
+    assert r.returncode == 0
+    assert len(_calls(tmp_path)) == 3
+
+
+def test_leftovers_retries_three_times_before_failing(tmp_path: Path):
+    _fake(tmp_path, "aws", 'echo x >> "$FAKE_LOG"; echo arn:aws:s3:::a')
+    r = _run("aws_leftovers.sh", [], _env(tmp_path, {"LEFTOVERS_RETRY_SLEEP": "0"}))
+    assert r.returncode == 1
+    assert len(_calls(tmp_path)) == 3
+
+
+def test_image_names_come_from_terraform_output_keys(tmp_path: Path, clean_images_file):
+    _stateful_fakes(tmp_path, repos_exist=True)
+    r = _run("push_images.sh", [], _env(tmp_path, {"IMAGE_TAG": "t1"}))
+    assert r.returncode == 0, r.stderr
+    assert "ENABLE_EVAL_TARGETS" not in (ROOT / "scripts/push_images.sh").read_text()
+    assert "declare -A" not in (ROOT / "scripts/push_images.sh").read_text()
+
+
+def test_dockerignore_excludes_secrets():
+    text = (ROOT / ".dockerignore").read_text()
+    for pat in (".env", ".venv", "*.tfstate*", ".git", ".superpowers"):
+        assert pat in text.splitlines()

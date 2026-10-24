@@ -12,13 +12,23 @@ TF="${TERRAFORM_BIN:-terraform}"
 TF_DIR="$ROOT/infra/terraform"
 ECR_TARGET="module.ecs.aws_ecr_repository.this"
 
+cat >&2 <<'BANNER'
+================================================================
+toolgate on AWS costs real money for every hour it runs (NAT,
+ALB, RDS, Fargate; see infra/terraform/README.md). A $25 monthly
+AWS Budget alarm is created, but it only alerts, it does not stop
+spend. Run `make aws-down` when you are done. Terraform will ask
+for confirmation before it applies anything.
+================================================================
+BANNER
+
 if [[ "${1:-}" == "--dry-run" ]]; then
   echo "+ aws sts get-caller-identity"
   echo "+ $TF -chdir=infra/terraform init"
   echo "# stage 1, only when the ECR repositories do not exist yet:"
   echo "+ $TF -chdir=infra/terraform apply -target=$ECR_TARGET"
   echo "# stage 2:"
-  "$ROOT/scripts/push_images.sh" --dry-run
+  bash "$ROOT/scripts/push_images.sh" --dry-run
   echo "# stage 3:"
   echo "+ $TF -chdir=infra/terraform apply"
   exit 0
@@ -35,5 +45,5 @@ if ! printf '%s' "$urls" | grep -q '"gateway"'; then
   echo "ECR repositories not found; creating them first"
   "$TF" -chdir="$TF_DIR" apply -target="$ECR_TARGET"
 fi
-"$ROOT/scripts/push_images.sh"
+bash "$ROOT/scripts/push_images.sh"
 "$TF" -chdir="$TF_DIR" apply

@@ -12,27 +12,27 @@ DRY=0
 [[ "${1:-}" == "--dry-run" ]] && DRY=1
 
 # image name -> Dockerfile (all build from the repo root)
-declare -A DOCKERFILE=(
-  [mock-api]="services/mock-enterprise/Dockerfile"
-  [core-read]="services/mcp-servers/Dockerfile"
-  [core-write]="services/mcp-servers/Dockerfile"
-  [comms]="services/mcp-servers/Dockerfile"
-  [gateway]="packages/toolgate-gateway/Dockerfile"
-)
-NAMES=(mock-api core-read core-write comms gateway)
-# Eval targets only when enabled and a Dockerfile exists (F2 supplies them).
-if [[ "${ENABLE_EVAL_TARGETS:-0}" == "1" ]]; then
-  for n in evil-server sink; do
-    if [[ -f "$ROOT/eval/$n/Dockerfile" ]]; then
-      DOCKERFILE[$n]="eval/$n/Dockerfile"
-      NAMES+=("$n")
-    else
-      echo "skipping $n: eval/$n/Dockerfile does not exist" >&2
-    fi
-  done
-fi
+dockerfile_for() {
+  case "$1" in
+    mock-api) echo "services/mock-enterprise/Dockerfile" ;;
+    core-read | core-write | comms) echo "services/mcp-servers/Dockerfile" ;;
+    gateway) echo "packages/toolgate-gateway/Dockerfile" ;;
+    evil-server | sink)
+      # Eval targets (Terraform enable_eval_targets); F2 supplies the Dockerfiles.
+      if [[ -f "$ROOT/eval/$1/Dockerfile" ]]; then echo "eval/$1/Dockerfile"; fi
+      ;;
+  esac
+}
 
-TAG="${IMAGE_TAG:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo latest)}"
+# Never plain "latest": short sha, plus -dirty-<epoch> for an unclean tree.
+if [[ -n "${IMAGE_TAG:-}" ]]; then
+  TAG="$IMAGE_TAG"
+else
+  TAG="$(git -C "$ROOT" rev-parse --short HEAD)"
+  if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
+    TAG="$TAG-dirty-$(date +%s)"
+  fi
+fi
 OUT="$TF_DIR/images.auto.tfvars"
 
 run() {
@@ -41,17 +41,32 @@ run() {
 
 if ((DRY)); then
   echo "# repo URLs come from: $TF -chdir=infra/terraform output -json ecr_repository_urls"
-  REPO_JSON='{}'
+  REPO_JSON='{"mock-api": "x", "core-read": "x", "core-write": "x", "comms": "x", "gateway": "x"}'
 else
   REPO_JSON="$("$TF" -chdir="$TF_DIR" output -json ecr_repository_urls)"
 fi
 
+# Which images to build = the keys of the Terraform ECR repository map.
+NAMES=()
+while IFS= read -r key; do
+  if [[ -n "$(dockerfile_for "$key")" ]]; then
+    NAMES+=("$key")
+  else
+    echo "skipping $key: no Dockerfile known for it" >&2
+  fi
+done < <(printf '%s' "$REPO_JSON" | grep -o '"[^"]*": *"' | sed -E 's/^"([^"]*)".*/\1/')
+if ((${#NAMES[@]} == 0)); then
+  echo "error: no ECR repositories in terraform output (apply the ECR stage first)" >&2
+  exit 1
+fi
+
 repo_url() {
   local url
+  if ((DRY)); then echo "<ecr-url-for-$1>"; return; fi
   url="$(printf '%s' "$REPO_JSON" | grep -o "\"$1\": *\"[^\"]*\"" | sed 's/.*: *"\(.*\)"/\1/' || true)"
   if [[ -z "$url" ]]; then
     if ((DRY)); then echo "<ecr-url-for-$1>"; return; fi
-    echo "error: no ECR repository for $1 (apply the ECR stage first)" >&2
+    echo "error: no ECR repository for $1" >&2
     exit 1
   fi
   printf '%s' "$url"
@@ -71,11 +86,11 @@ for n in "${NAMES[@]}"; do
   ref="$url:$TAG"
   if [[ "$n" == "gateway" ]]; then
     base="toolgate-gateway-base:$TAG"
-    run docker build --platform linux/amd64 -f "${DOCKERFILE[$n]}" -t "$base" "$ROOT"
+    run docker build --platform linux/amd64 -f "$(dockerfile_for "$n")" -t "$base" "$ROOT"
     run docker build --platform linux/amd64 -f infra/docker/gateway.cloud.Dockerfile \
       --build-arg "BASE_IMAGE=$base" -t "$ref" "$ROOT"
   else
-    run docker build --platform linux/amd64 -f "${DOCKERFILE[$n]}" -t "$ref" "$ROOT"
+    run docker build --platform linux/amd64 -f "$(dockerfile_for "$n")" -t "$ref" "$ROOT"
   fi
   run docker push "$ref"
   lines+=("  \"$n\" = \"$ref\"")
