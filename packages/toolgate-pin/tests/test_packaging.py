@@ -48,21 +48,21 @@ def test_wheel_contains_corpus_and_runs_demo(tmp_path):
     # The README is the package's long description.
     assert "five-minute" in metadata.lower()
 
-    proc = subprocess.run(
-        [
-            "uvx",
-            "--offline",
-            "--from",
-            str(wheels[0]),
-            "toolgate-pin",
-            "demo",
-        ],
-        check=False,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-        timeout=300,
-    )
+    def run_demo(*extra: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["uvx", *extra, "--from", str(wheels[0]), "toolgate-pin", "demo"],
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            timeout=300,
+        )
+
+    # Prefer the offline uv cache (fast, no network); a fresh machine such as a
+    # CI runner has not cached the wheel's dependencies, so fall back to online.
+    proc = run_demo("--offline")
+    if "network was disabled" in proc.stderr:
+        proc = run_demo()
     assert proc.returncode == 1, proc.stderr
     assert "quarantined get_claim_status (drift)" in proc.stdout
